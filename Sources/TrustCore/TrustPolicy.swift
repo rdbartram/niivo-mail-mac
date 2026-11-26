@@ -67,6 +67,10 @@ public struct TrustPolicy: Codable, Sendable, Equatable {
     /// Entra group object id; membership (transitive) means wipe. Must not be a hidden-membership group: Graph
     /// omits those from checkMemberGroups for delegated callers who aren't members.
     public var wipeGroupId: String?
+    /// How often the wipe group is checked while a wipe group is set (minutes). nil → `defaultWipeGroupCheckMinutes`.
+    /// Shorter is stricter; values below `minimumWipeGroupCheckMinutes` are raised to it (0 never means "never").
+    /// Optional so policies encoded before this key existed still decode.
+    public var wipeGroupCheckMinutes: Int?
     public var blockExternalForwardRules: Bool
     public var aiAccess: TrustAIAccess
     /// On-device AI (Apple FoundationModels: content never leaves the Mac). nil → follows `aiAccess`.
@@ -82,7 +86,7 @@ public struct TrustPolicy: Codable, Sendable, Equatable {
                 allowScreenCapture: Bool, appLock: AppLockPolicy, offlineGraceDays: Int, offlineWipeDays: Int,
                 minimumOSVersion: OSVersion, requireFileVault: Bool, requireSIP: Bool, requireScreenLock: Bool,
                 wipeGroupId: String?, blockExternalForwardRules: Bool, aiAccess: TrustAIAccess, version: Int, issuedAt: Date?,
-                onDeviceAIAccess: TrustAIAccess? = nil, allowedAIProviders: [String]? = nil) {
+                onDeviceAIAccess: TrustAIAccess? = nil, allowedAIProviders: [String]? = nil, wipeGroupCheckMinutes: Int? = nil) {
         self.profile = profile; self.cacheWindowMaxDays = cacheWindowMaxDays; self.allowOfflineBodies = allowOfflineBodies
         self.allowOfflineBodiesForLabelled = allowOfflineBodiesForLabelled; self.allowAttachmentsDownload = allowAttachmentsDownload
         self.approvedOpenInBundleIds = approvedOpenInBundleIds; self.allowPrint = allowPrint; self.allowCopyOut = allowCopyOut
@@ -92,6 +96,14 @@ public struct TrustPolicy: Codable, Sendable, Equatable {
         self.blockExternalForwardRules = blockExternalForwardRules; self.aiAccess = aiAccess; self.version = version
         self.issuedAt = issuedAt
         self.onDeviceAIAccess = onDeviceAIAccess; self.allowedAIProviders = allowedAIProviders
+        self.wipeGroupCheckMinutes = wipeGroupCheckMinutes
+    }
+
+    public static let defaultWipeGroupCheckMinutes = 60
+    public static let minimumWipeGroupCheckMinutes = 5
+    /// The wipe-group cadence actually used (minutes).
+    public var effectiveWipeGroupCheckMinutes: Int {
+        max(Self.minimumWipeGroupCheckMinutes, wipeGroupCheckMinutes ?? Self.defaultWipeGroupCheckMinutes)
     }
 
     /// Effective on-device level (see `onDeviceAIAccess`).
@@ -180,6 +192,10 @@ public struct TrustPolicy: Codable, Sendable, Equatable {
         require(&requireScreenLock, o.requireScreenLock)
         // A wipe group is a control; a second source can add one but only forced MDM can remove or replace it.
         if let v = o.wipeGroupId { if relax || wipeGroupId == nil { wipeGroupId = v.isEmpty ? nil : v } }
+        if let v = o.wipeGroupCheckMinutes {
+            let v = max(Self.minimumWipeGroupCheckMinutes, v)
+            wipeGroupCheckMinutes = relax ? v : min(effectiveWipeGroupCheckMinutes, v)
+        }
         require(&blockExternalForwardRules, o.blockExternalForwardRules)
         let onDeviceBefore = effectiveOnDeviceAIAccess
         if let v = o.aiAccess { aiAccess = relax ? v : min(aiAccess, v) }
@@ -212,6 +228,7 @@ public struct TrustPolicyOverlay: Codable, Sendable, Equatable {
     public var requireSIP: Bool?
     public var requireScreenLock: Bool?
     public var wipeGroupId: String?
+    public var wipeGroupCheckMinutes: Int?
     public var blockExternalForwardRules: Bool?
     public var aiAccess: TrustAIAccess?
     public var onDeviceAIAccess: TrustAIAccess?
@@ -226,6 +243,7 @@ public struct TrustPolicyOverlay: Codable, Sendable, Equatable {
         appLockIdleMinutes = p.appLock.idleMinutes; offlineGraceDays = p.offlineGraceDays; offlineWipeDays = p.offlineWipeDays
         minimumOSVersion = p.minimumOSVersion; requireFileVault = p.requireFileVault; requireSIP = p.requireSIP
         requireScreenLock = p.requireScreenLock; wipeGroupId = p.wipeGroupId; blockExternalForwardRules = p.blockExternalForwardRules
+        wipeGroupCheckMinutes = p.wipeGroupCheckMinutes
         aiAccess = p.aiAccess
         onDeviceAIAccess = p.onDeviceAIAccess; allowedAIProviders = p.allowedAIProviders
     }
@@ -235,7 +253,7 @@ public struct TrustPolicyOverlay: Codable, Sendable, Equatable {
         "profile", "cacheWindowMaxDays", "allowOfflineBodies", "allowOfflineBodiesForLabelled", "allowAttachmentsDownload",
         "approvedOpenInBundleIds", "allowPrint", "allowCopyOut", "allowScreenCapture", "appLockRequireBiometric",
         "appLockIdleMinutes", "offlineGraceDays", "offlineWipeDays", "minimumOSVersion", "requireFileVault", "requireSIP",
-        "requireScreenLock", "wipeGroupId", "blockExternalForwardRules", "aiAccess", "onDeviceAIAccess", "allowedAIProviders",
+        "requireScreenLock", "wipeGroupId", "wipeGroupCheckMinutes", "blockExternalForwardRules", "aiAccess", "onDeviceAIAccess", "allowedAIProviders",
     ]
 
     public var setKeys: [String] {
