@@ -296,9 +296,10 @@ func runTrustEnforcementTests() async {
         let (l, origin) = TenantPolicySource.load(prefs: forced, directory: nil, store: st, now: now)
         let p = l.policy, d = TrustPolicy.byodDefault
         check(origin == "managedPreferences" && l.sources.contains { $0.source == .tenantSigned && $0.applied }, "signed document from managed prefs applied")
-        check(p.offlineGraceDays == d.offlineGraceDays && p.offlineWipeDays == d.offlineWipeDays && p.cacheWindowMaxDays == d.cacheWindowMaxDays
+        check(p.offlineGraceDays == d.offlineGraceDays && p.offlineWipeDays == d.offlineWipeDays
               && !p.allowOfflineBodiesForLabelled && p.appLock.requireBiometric && p.requireFileVault && p.profile == .byod,
-              "tenant document can't relax grace / wipe days, window, offline bodies, app lock, FileVault or profile")
+              "tenant document can't relax grace / wipe days, offline bodies, app lock, FileVault or profile")
+        check(p.cacheWindowMaxDays == 365, "… but may lengthen the offline window, the one relaxable key (BACKLOG §17 S4)")
         check(!p.allowPrint && p.wipeGroupId == "G-9" && p.effectiveWipeGroupCheckMinutes == 10 && p.version == 4,
               "… but tightens print, adds a wipe group and a shorter cadence")
         // Tightening offline grace works.

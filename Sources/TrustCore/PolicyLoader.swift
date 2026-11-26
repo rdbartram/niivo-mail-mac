@@ -166,6 +166,13 @@ public struct PolicyLoader: Sendable {
                 var o = doc.policy
                 o.profile = nil // the profile can only come from a forced MDM key
                 policy.apply(o, relax: false)
+                // The one key a signed tenant file may relax: the offline window. Entra asserts no device-registration
+                // signal an app can read, so an unmanaged Mac stays BYOD; the tenant opts in to a longer window here,
+                // capped at the managed default (BACKLOG §17 S4). Everything else only tightens.
+                if let w = o.cacheWindowMaxDays, w > policy.cacheWindowMaxDays {
+                    policy.cacheWindowMaxDays = min(w, TrustPolicy.managedDefault.cacheWindowMaxDays)
+                    tReport.notes.append("relaxed:cacheWindowMaxDays")
+                }
                 policy.version = doc.version
                 policy.issuedAt = doc.issuedAt
                 tReport.applied = true; tReport.keys = o.setKeys
