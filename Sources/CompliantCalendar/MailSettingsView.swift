@@ -185,6 +185,7 @@ struct MailCacheSettings: View {
             TodaySettingsSection()   // TODAY-HOOK (TodayViews.swift)
             MailNotificationSettingsSection()   // NOTIFY-HOOK (MailNotifier.swift)
             AppLifecycleSettingsSection()   // LIFECYCLE-HOOK: login item, menu bar, default mail app (AppLifecycle.swift)
+            UpdateSettingsSection()   // UPDATE-HOOK: automatic checks, Check Now (AppUpdater.swift)
             OrganiseSettingsSection()   // CATEGORIES master list + keymap + All Inboxes (MailOrganiseSheets.swift)
             Org2SettingsSections()   // ORG2-HOOK: avatars, VIPs, Quick Steps (MailOrg2Views.swift)
         }

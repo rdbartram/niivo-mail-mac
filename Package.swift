@@ -13,6 +13,8 @@ let package = Package(
     dependencies: [
         .package(url: "https://github.com/AzureAD/microsoft-authentication-library-for-objc.git",
                  .upToNextMajor(from: "2.18.1")),
+        // Auto-update (docs/RELEASING.md). Pinned exactly: the bundled helpers are re-signed by scripts/bundle.sh.
+        .package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.10.1"),
     ],
     targets: [
         // Pure, UI-free core: models, local-first store, sync, Graph client, compliance engine.
@@ -37,6 +39,7 @@ let package = Package(
                 "OfficeTools",
                 "ProtectedContent",
                 .product(name: "MSAL", package: "microsoft-authentication-library-for-objc"),
+                .product(name: "Sparkle", package: "Sparkle"),
             ],
             // niivo brand faces (OFL 1.1, see Resources/Fonts/OFL.txt). Located by NiivoFonts without Bundle.module.
             resources: [.copy("Resources/Fonts"), .copy("Resources/Localizable.xcstrings")]

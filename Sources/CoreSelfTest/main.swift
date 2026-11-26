@@ -202,6 +202,7 @@ await runComposeExtrasTests()   // COMPOSE2: send later, reply settings, Save Al
 await runComposeAssistTests()   // COMPOSE: autocomplete, MailTips, From, templates, table/rule, reopened drafts
 runRTFBodyTests()
 await runTrustTests()
+runUpdatePolicyTests()   // UPDATE-HOOK
 await runMCPTests()
 await runAIAssistTests()
 await runVoiceTests()   // VOICE: layered voice prompts, signature rules
