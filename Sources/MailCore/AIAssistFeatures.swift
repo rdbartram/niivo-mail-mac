@@ -38,7 +38,7 @@ public struct AIAssistant: Sendable {
 
     func provider(_ f: AIFeature) throws -> any AIProvider {
         guard settings.choice != .off else { throw AIAssistError.off }
-        guard let p = route(f) else { throw AIAssistError.notAllowed("No AI provider is available or allowed for this") }
+        guard let p = route(f) else { throw AIAssistError.notAllowed(Self.noProvider) }
         return p
     }
 
@@ -180,9 +180,7 @@ public struct AIAssistant: Sendable {
 
     public func rewrite(_ text: String, labelId: String?, mode: AIRewriteMode) async throws -> AITextResult {
         let p = try provider(.rewrite)
-        guard gate.draftExposure(labelId: labelId, tier: p.tier) == .content else {
-            throw AIAssistError.notAllowed(gate.draftRefusal(labelId: labelId, tier: p.tier))
-        }
+        if let why = editRefusal(labelId: labelId, tier: p.tier) { throw AIAssistError.notAllowed(why) }   // same check as the menu
         var b = AIPromptBuilder(gate: gate, tier: p.tier)
         b.addDraft(text)
         let prompt = b.build(system: Self.rewriteSystem, task: "Rewrite the DRAFT block. \(mode.instruction)")

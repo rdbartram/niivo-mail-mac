@@ -189,6 +189,21 @@ enum AppEntry {
                 try await shot("composer-ai", CGSize(width: 1140, height: 700), dark: dark,
                                HStack(alignment: .top, spacing: 0) { ComposerView(composer: c).frame(width: 720); AIDraftPopover().padding(.top, 60).padding(.leading, 10); Spacer() })
             }
+            // AI text applied in the editor (marked, editable) + the ⌘J actions palette.
+            let sig = c.editor.signaturePlain
+            let t = AIEditText.target(body: c.body, selection: nil, signaturePlain: sig)
+            if let a = AIAppliedEdit.apply(body: c.body, target: t.range, text: "Hi Alex,\n\nThanks for sending the pack. Approved from my side; I'll sign it this afternoon.\n\nOne question: does legal need to see the appendix before Thursday?\n\nBest,\nJordan",
+                                           placement: .replace, origin: .draft) {
+                mail.ai.composer.applied = a
+                mail.ai.composer.voice = VoiceProfile().resolve(counterpart: nil)
+                mail.ai.composer.retry = .draft(nil)
+                c.body = a.body
+                for dark in [false, true] {
+                    try await shot("composer-ai-applied", CGSize(width: 1100, height: 700), dark: dark,
+                                   HStack(alignment: .top, spacing: 0) { ComposerView(composer: c).frame(width: 720); AIActionsPalette(composer: c).padding(.top, 120).padding(.leading, 10); Spacer() })
+                }
+                mail.ai.composer.applied = nil
+            }
             mail.composer = nil
         }
         mail.ai.preview = nil

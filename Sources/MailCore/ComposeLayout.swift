@@ -29,9 +29,10 @@ public enum ComposeLayout {
     public enum FormatBarMode: Sendable, Equatable { case hidden, floating, pinned }
 
     /// What Esc does in the composer, most specific first.
-    public enum EscapeAction: Sendable, Equatable { case discardSuggestion, collapseOriginal, closeComposer }
-    public static func escape(suggestionPending: Bool, originalExpanded: Bool) -> EscapeAction {
-        if suggestionPending { return .discardSuggestion }
+    public enum EscapeAction: Sendable, Equatable { case undoAIText, collapseOriginal, closeComposer }
+    /// `aiMarked`: AI text is in the editor and still marked (not edited / kept) — Esc undoes it, as the bar says.
+    public static func escape(aiMarked: Bool, originalExpanded: Bool) -> EscapeAction {
+        if aiMarked { return .undoAIText }
         if originalExpanded { return .collapseOriginal }
         return .closeComposer
     }
@@ -44,8 +45,9 @@ public enum ComposeLayout {
         return [a]
     }
 
-    /// Send is held while an AI suggestion waits for Keep / Discard (⌘↩ would otherwise send the old text).
-    public static func sendEnabled(suggestionPending: Bool) -> Bool { !suggestionPending }
+    /// AI text lands in the body (sending keeps it), so only a request still running holds Send: its result would
+    /// otherwise arrive after the mail went.
+    public static func sendEnabled(aiWorking: Bool) -> Bool { !aiWorking }
 }
 
 /// The "↩ Re: … [Show original]" strip at the top of an inline reply. Collapsed by default.
@@ -55,38 +57,7 @@ public struct ComposeContextStrip: Sendable, Equatable {
     public mutating func toggle() { expanded.toggle() }
 }
 
-// MARK: - AI suggestion (inline, not side by side)
-
-/// What the composer's slim AI bar shows. Driven by the existing AIComposerState fields (busy / preview / undoBody).
-public enum AISuggestionPhase: Sendable, Equatable {
-    case idle, working, pending, kept
-
-    public static func of(busy: Bool, hasPreview: Bool, canUndo: Bool) -> AISuggestionPhase {
-        if busy { return .working }
-        if hasPreview { return .pending }
-        if canUndo { return .kept }
-        return .idle
-    }
-}
-
-/// The body transform behind Keep (AIAssistModel.acceptPreview) and the highlighted rendering of a pending suggestion.
-public enum AISuggestionText {
-    /// Keep: a rewrite of a selection replaces only that range — when the body is still the text the range was taken
-    /// from; otherwise (or for a whole-body draft) the suggestion replaces the body.
-    public static func apply(body: String, before: String, after: String, range: Range<String.Index>?) -> String {
-        guard let r = range, body == before, r.upperBound <= body.endIndex else { return after }
-        var b = body
-        b.replaceSubrange(r, with: after)
-        return b
-    }
-
-    /// Pending rendering: text before the selection, the highlighted suggestion, text after it. A whole-body draft is
-    /// all suggestion.
-    public static func segments(before: String, after: String, range: Range<String.Index>?) -> (prefix: String, suggestion: String, suffix: String) {
-        guard let r = range, r.upperBound <= before.endIndex else { return ("", after, "") }
-        return (String(before[..<r.lowerBound]), after, String(before[r.upperBound...]))
-    }
-}
+// AI in the editor: MailCore/AIEditing.swift (AIAppliedEdit, AIInlinePhase).
 
 // MARK: - Labels in the message list
 

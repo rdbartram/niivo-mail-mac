@@ -488,6 +488,17 @@ public extension AIAssistant {
     /// Layer text is the user's own, but still neutralised (no fake mail markers) and capped.
     static func voiceSystem(_ v: VoiceResolution) -> String {
         var s = VoiceDefaults.replyRules + "\n\nThe user's voice, from general to specific. Later layers are more specific and win on conflicts.\n"
+        s += voiceLayerBlocks(v)
+        s += "\nResolved for this draft (follow these): language: "
+        s += v.language.instruction
+        s += " Formality: \(v.formality.instruction)."
+        if let a = v.addressAs { s += " Address them as: \(AIPromptBuilder.neutralise(AIUntrustedText.line(a, max: 60)))." }
+        return s + "\n\n" + VoiceDefaults.outputFormat
+    }
+
+    /// The layers as prompt blocks (Me, Organisation, Contact), neutralised and capped. Shared by drafts and edits.
+    static func voiceLayerBlocks(_ v: VoiceResolution) -> String {
+        var s = ""
         for (i, l) in v.layers.enumerated() {
             let head: String
             switch l.kind {
@@ -498,19 +509,13 @@ public extension AIAssistant {
             let body = AIUntrustedText.truncate(AIPromptBuilder.neutralise(AIUntrustedText.stripInvisible(l.text)), layerCap)
             s += "\n=== \(head) ===\n\(body)\n"
         }
-        s += "\nResolved for this draft (follow these): language: "
-        s += v.language.instruction
-        s += " Formality: \(v.formality.instruction)."
-        if let a = v.addressAs { s += " Address them as: \(AIPromptBuilder.neutralise(AIUntrustedText.line(a, max: 60)))." }
-        return s + "\n\n" + VoiceDefaults.outputFormat
+        return s
     }
 
     /// Refuses (no provider call) unless the original is shareable as content on the routed tier.
     func draftReplyInVoice(_ r: AIVoiceRequest, signaturePlain: String? = nil) async throws -> AIVoiceDraft {
         let p = try provider(.draftReply)
-        guard gate.exposure(r.original, mailbox: r.mailbox, tier: p.tier) == .content else {
-            throw AIAssistError.notAllowed("This message can't be shared with AI (label or organisation policy)")
-        }
+        if let why = replyRefusal(original: r.original, mailbox: r.mailbox, tier: p.tier) { throw AIAssistError.notAllowed(why) }   // same check as the menu
         var b = AIPromptBuilder(gate: gate, tier: p.tier)
         // The answering message first, so the total-size downgrade never reaches it.
         b.add(r.original, mailbox: r.mailbox, role: "answering", context: r.contextLines)

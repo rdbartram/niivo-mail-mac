@@ -300,7 +300,7 @@ struct VoiceComposerBadge: View {
                 }
                 .modifier(AIChipButton(skin: skin, quiet: true))
                 .help("Why this draft looks like this")
-                .popover(isPresented: $s.showWhy) { VoiceWhyView(lines: s.why, plan: s.pendingSignature) }
+                .popover(isPresented: $s.showWhy) { VoiceWhyView(lines: s.why, plan: nil) }
             }
             let items = m.items(for: who, mail: app.mail) { m.showComposerEditor = true }
             if !items.isEmpty {

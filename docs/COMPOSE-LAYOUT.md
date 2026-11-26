@@ -55,11 +55,12 @@ on screen (no app launch in the builder loop).
   inside the reader's `captureShield` + watermark, so the original's rights still govern the pane. The strip honours
   `redactDetails` ("Private message") and shows the original's label pill; unknown / external / protected-elsewhere
   originals keep their notice line under the strip; header markings stay visible.
-- Every send path (⌘↩, Send ▾, ⋯ ▸ Send Later, Schedule) is refused while an AI suggestion is pending
-  (`MailModel.send`); closing a composer drops its pending suggestion.
+- Every send path (⌘↩, Send ▾, ⋯ ▸ Send Later, Schedule) is refused only while an AI request is still running
+  (`MailModel.send`, `ComposeLayout.sendEnabled(aiWorking:)`). AI text already in the editor is sent as yours.
+  Closing or replacing a composer cancels its request and drops its AI state (`AIComposerState.detach`).
 - "Show original" expands the original through the same `ReaderBody(reader:)` path (policy, protected bodies,
   remote-image gate). Collapsed by default (`ComposeContextStrip.expanded == false`).
-- Esc: discard a pending AI suggestion → collapse the original → close the composer (closeComposer: empty closes
+- Esc: undo AI text that is still marked → collapse the original → close the composer (closeComposer: empty closes
   silently, otherwise the draft is saved). `ComposeLayout.escape(…)`.
 - Conversation view: the thread stack shows only the message being answered expanded (others as collapsed headers),
   derived while replying (`ComposeLayout.replyExpansion`) — `ConversationHub.expanded` is not mutated, so the user's
@@ -78,18 +79,53 @@ on screen (no app launch in the builder loop).
 - Footer: attach, Aa, AI ✦ | saved time | Discard (trash), Send split button (Send ▾ = send later presets + Custom…).
   The CLOSE button is gone (Esc / strip ×).
 
-### AI inline
+### AI inline (2026-11-26: AI text lands in the editor)
 
-- AI ✦ (footer) menu: Draft reply…, the five intents (1–5 shortcuts in the reader are unchanged), Rewrite ▸ (polish,
-  shorten, formal, friendlier, Translate ▸), Voice ▸ (edit voice for contact / org), Why.
-- The result renders **inside the editor box** as a highlighted suggestion block over the still-mounted editor:
-  the whole draft for an AI reply, or the body with only the selection replaced for a rewrite
-  (`AISuggestionText.segments`). Under it a slim bar: "AI draft · Voice: … · Keep ⏎ · Retry · Discard ⎋ · Why".
-  While a suggestion is pending the editor is read-only and Send waits.
-- Keep = the existing `AIAssistModel.acceptPreview` (signature plan + dedupe + one undo via `undoAI`), unchanged apart
-  from the body transform now being the pure `AISuggestionText.apply`. Busy / Cancel, errors, notes, pre-send
-  findings and "Undo AI change" live in the same slim bar (`AISuggestionPhase`).
-- No more Before/After split, no reply chip row under the composer.
+Owner, second-device test (BACKLOG §17): "odd UI that doesn't make it possible to edit AI drafts … a bad odd flow",
+"we are missing the AI editing options". Cause: the 2026-11-20 version showed the result as a read-only SwiftUI
+`Text` over a hidden, non-editable editor; the only ways out were Keep ⏎ / Retry / Discard, Retry took no instruction,
+and Send was refused until you chose.
+
+One pattern now, for drafts, the editing actions and "Ask AI to change…" (pure state machine `AIAppliedEdit` in
+`MailCore/AIEditing.swift`, CoreSelfTest `AIEditingTests.swift`):
+
+- **Applied, editable, marked.** The result is written into the body at once. The editor stays editable and focused.
+  The AI text carries a soft accent background, a layout-manager temporary attribute, so it never reaches the saved or
+  sent HTML. Typing inside it makes it yours: the marker goes and the bar says "AI text, edited by you".
+- **Slim bar:** "AI draft · edit it freely · Voice: Me · Org · Contact ▾ · Keep · Try again ▾ · Undo ⎋ · Why".
+  - Undo puts back what the AI text replaced, including a signature switch. Your edits elsewhere stay. ⌘Z all the
+    way back counts as Undo.
+  - Try again ▸ offers Replace the AI text, Add another version below, and Try again with instruction…. Your text
+    outside the AI span is never touched.
+  - Keep just removes the marker. Sending keeps it too: Send no longer waits for a decision, only for a request that
+    is still running.
+- **Where it goes.**
+  - An empty reply gets the draft above the signature. If you already wrote something, the draft goes below it,
+    never over it.
+  - An action works on the selection, or on the whole text you wrote (signature excluded) when nothing is selected.
+  - The editor stays editable while AI works. The request's target follows your typing (`AIEditAnchor`). If you typed
+    inside the target, the result is added below with a note instead of overwriting your words.
+- **Actions** (AI ✦ menu "Edit Selection" / "Edit Whole Message", and the ⌘J palette):
+  - Rewrite, Fix Grammar and Spelling, Shorten, Expand and Summarise as Bullets.
+  - Change Tone ▸ More formal / Friendlier / More direct.
+  - Translate ▸ English / German / French / Italian.
+  - Ask AI to change… (free text; on an empty draft it writes from the instruction).
+- **⌘J** opens the actions palette. Type what you want, or a word to filter, and ↩ runs the first row. The editor
+  handles ⌘J itself; a hidden footer button covers the header fields. Outlook's ⌘J (Forward) is already disabled
+  while a composer is open.
+- **Gate.** Items the gate refuses stay visible but disabled, with the reason as the section's first line (palette:
+  under the field). The reason comes from the same MailCore function the call uses (`AIAssistant.editRefusal`,
+  `replyRefusal`), so the menu and a refused call always agree, and a refused call never reaches a provider.
+  - Edits send only the target text plus your voice notes: never the original, the thread or style examples.
+  - The tiers are unchanged. The draft's label (with the reply floor) and the routed tier decide.
+- **Voice.**
+  - Drafts and edits use the resolved voice for the current recipients (Me → Organisation → Contact).
+  - Each layer can be switched off for the next request: AI ✦ ▸ Voice, the palette, or the Try again with
+    instruction popover. A dropped layer's language, register and form of address go with it.
+  - In edits, Translate decides the language and Tone the register, so the resolved voice never contradicts them.
+  - Applying a draft sets the voice-learning baseline (`VoiceLearnModel.accepted`), so your later edits feed the
+    existing VoiceEdit / nudge path. Undo clears it.
+- The floating format bar now sits at the bottom of the editor, where it no longer covers the first lines.
 
 ### Reader
 

@@ -53,7 +53,9 @@ final class ComposerState: Identifiable {
     var bccText = "" { didSet { edited() } }   // typed-but-not-tokenised addresses still autosave
     var showCcBcc = false
     var subject = "" { didSet { edited() } }
-    var body = "" { didSet { edited() } }
+    var body = "" { didSet { edited(); onBody?() } }
+    /// AI-HOOK: the primary composer's AI span follows every body change (AIAssistModel.bodyChanged).
+    @ObservationIgnored var onBody: (() -> Void)?
     var importance: Importance = .normal { didSet { edited() } }
     /// COMPOSE2: reply/forward without the quoted history (Mail Settings → Send As → Replying).
     var omitHistory = false
@@ -166,7 +168,7 @@ final class MailModel {
             guard oldValue != selectedFolderId else { return }
             searchText = ""
             if let c = composer {   // another folder: the pane composer goes (saved or deleted by content)
-                if ai.composer.preview != nil { ai.acceptPreview() }
+                ai.keepApplied()   // AI text is already in the body
                 closeComposer(c)
             }
             resetList()
@@ -199,7 +201,7 @@ final class MailModel {
                rows.first(where: { $0.id == sel })?.conversationId == o.conversationId { return }
         }
         if c.original == nil && selectedMessageId == nil { return }   // a new mail in the pane, nothing selected
-        if ai.composer.preview != nil { ai.acceptPreview() }   // an AI draft not kept yet is still the user's draft
+        ai.keepApplied()   // AI text in the editor is the user's draft
         closeComposer(c)
     }
     private(set) var rows: [MailMessage] = []
@@ -1217,9 +1219,13 @@ final class MailModel {
             if (old.isEmpty || !old.touched) && old.savedDraftId == nil { old.autosaveTask?.cancel() } else { moveToWindow(old) }
         }
         if composer !== c {   // AI-HOOK: fresh AI state per composer (AI follows the primary one)
-            ai.composer.cancel(); ai.composer = AIComposerState()
+            ai.composer.detach(); ai.composer = AIComposerState()
         }
         prepareEditor(c)   // before onEdit: a default signature alone must not schedule an autosave
+        c.onBody = { [weak self, weak c] in
+            guard let self, let c else { return }
+            self.ai.bodyChanged(c)
+        }
         c.onEdit = { [weak self, weak c] in
             guard let self, let c else { return }
             c.touched = true
@@ -1231,7 +1237,7 @@ final class MailModel {
 
     /// Extra composer windows (WindowGroup "composer-extra", keyed by ComposerState.id).
     func moveToWindow(_ c: ComposerState) {
-        if composer === c { composer = nil }
+        if composer === c { ai.composer.detach(); composer = nil }   // AI state never follows a draft into a window (restore() may bring it back)
         if !windowComposers.contains(where: { $0 === c }) { windowComposers.append(c) }
         windowRequests.append(c.id)
     }
@@ -1247,7 +1253,7 @@ final class MailModel {
     private func detach(_ c: ComposerState) {
         c.autosaveTask?.cancel()
         if composer === c {   // COMPOSE-LAYOUT: a suggestion never outlives its composer (it would lock the next editor)
-            ai.composer.preview = nil; ai.composer.pendingSignature = nil
+            ai.composer.detach()
             composer = nil; focusListToken += 1
         }
         windowComposers.removeAll { $0 === c }
@@ -1322,10 +1328,11 @@ final class MailModel {
 
     /// Send after the 10 s undo window, or later (`at`).
     func send(_ c: ComposerState, at: Date? = nil) {
-        // COMPOSE-LAYOUT: a pending AI suggestion isn't in the body yet — every send path (⌘↩, Send ▾, ⋯, Schedule) waits.
-        if composer === c, !ComposeLayout.sendEnabled(suggestionPending: ai.composer.preview != nil) {
-            c.error = L("Keep or discard the AI suggestion first."); return
+        // COMPOSE-LAYOUT: AI text is in the body (sending keeps it); only a request still running holds every send path.
+        if composer === c, !ComposeLayout.sendEnabled(aiWorking: ai.composer.busy != nil) {
+            c.error = L("AI is still working on this draft. Wait for it or cancel it first."); return
         }
+        if composer === c { ai.keepApplied() }
         if composer === c, ai.interceptSend(c, at: at) { return }   // AI-HOOK: pre-send check (⌘↩ again sends); primary composer only
         c.commitTokenText()
         guard !c.allRecipients.isEmpty else { c.error = "Add at least one recipient."; return }
