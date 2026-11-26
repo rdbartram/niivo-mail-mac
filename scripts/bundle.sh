@@ -12,12 +12,25 @@ APP="${APP:-build/niivo mail.app}"
 # deployment-specific, so they come from a git-ignored build.env (NIIVO_CLIENT_ID=..., NIIVO_TENANT_ID=...) or the
 # environment, never from this script. Empty = the app asks for config.json / shows "not configured".
 # The environment wins over build.env (NIIVO_CLIENT_ID= with an empty value builds an unconfigured app).
-_env_cid="${NIIVO_CLIENT_ID-__unset__}"; _env_tid="${NIIVO_TENANT_ID-__unset__}"
+# Same rule for the auto-update and version settings (docs/RELEASING.md):
+#   SPARKLE_PUBLIC_KEY  Sparkle EdDSA public key (generate_keys). Empty = no SU* keys, the updater stays off.
+#   SPARKLE_FEED_URL    appcast URL (default: this repo's latest GitHub release). Forks set their own.
+#   VERSION             CFBundleShortVersionString (default 0.1.0).
+#   BUILD_NUMBER        CFBundleVersion; must strictly increase per release (default: commit count of HEAD).
+_ENV_VARS=(NIIVO_CLIENT_ID NIIVO_TENANT_ID SPARKLE_PUBLIC_KEY SPARKLE_FEED_URL VERSION BUILD_NUMBER)
+_env_saved=()
+for v in "${_ENV_VARS[@]}"; do _env_saved+=("${!v-__unset__}"); done
 if [[ -f build.env ]]; then set -a; source build.env; set +a; fi
-[[ "$_env_cid" != __unset__ ]] && NIIVO_CLIENT_ID="$_env_cid"
-[[ "$_env_tid" != __unset__ ]] && NIIVO_TENANT_ID="$_env_tid"
+for i in "${!_ENV_VARS[@]}"; do
+  if [[ "${_env_saved[$i]}" != __unset__ ]]; then printf -v "${_ENV_VARS[$i]}" '%s' "${_env_saved[$i]}"; fi
+done
 NIIVO_CLIENT_ID="${NIIVO_CLIENT_ID:-}"
 NIIVO_TENANT_ID="${NIIVO_TENANT_ID:-}"
+SPARKLE_PUBLIC_KEY="${SPARKLE_PUBLIC_KEY:-}"
+SPARKLE_FEED_URL="${SPARKLE_FEED_URL:-https://github.com/rdbartram/niivo-mail-mac/releases/latest/download/appcast.xml}"
+VERSION="${VERSION:-0.1.0}"
+BUILD_NUMBER="${BUILD_NUMBER:-$(git rev-list --count HEAD 2>/dev/null || echo 1)}"
+if [[ ! "$BUILD_NUMBER" =~ ^[0-9]+$ ]]; then echo "BUILD_NUMBER must be an integer (got '$BUILD_NUMBER')" >&2; exit 1; fi
 
 swift build -c "$CONFIG" --product CompliantCalendar
 swift build -c "$CONFIG" --product OfficeMCP
@@ -45,6 +58,21 @@ fi
 MSAL_FW="$(find .build/artifacts -path '*macos-arm64_x86_64/MSAL.framework' -maxdepth 6 | head -1)"
 cp -R "$MSAL_FW" "$APP/Contents/Frameworks/"
 install_name_tool -add_rpath "@executable_path/../Frameworks" "$APP/Contents/MacOS/CompliantCalendar" 2>/dev/null || true
+# Sparkle 2 (auto-update). ditto keeps the framework's Versions/ symlinks intact.
+# The app isn't sandboxed, so Sparkle's XPC services are unused: its sandboxing guide allows removing them, which
+# leaves Autoupdate + Updater.app as the only nested code to re-sign.
+SPARKLE_FW="$(find .build/artifacts -path '*macos-arm64_x86_64/Sparkle.framework' -maxdepth 6 | head -1)"
+if [[ -z "$SPARKLE_FW" ]]; then echo "Sparkle.framework not found under .build/artifacts (swift package resolve?)" >&2; exit 1; fi
+ditto "$SPARKLE_FW" "$APP/Contents/Frameworks/Sparkle.framework"
+rm -rf "$APP/Contents/Frameworks/Sparkle.framework/Versions/B/XPCServices" "$APP/Contents/Frameworks/Sparkle.framework/XPCServices"
+
+# Sparkle feed + key only when a public key is configured; otherwise AppUpdater reports "not configured" and never
+# starts Sparkle. SUEnableInstallerLauncherService is only for sandboxed apps, so it isn't set.
+SPARKLE_PLIST=""
+if [[ -n "$SPARKLE_PUBLIC_KEY" ]]; then
+  SPARKLE_PLIST="<key>SUFeedURL</key><string>${SPARKLE_FEED_URL}</string>
+  <key>SUPublicEDKey</key><string>${SPARKLE_PUBLIC_KEY}</string>"
+fi
 
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -55,8 +83,9 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleDisplayName</key><string>niivo mail</string>
   <key>CFBundleExecutable</key><string>CompliantCalendar</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>0.1.0</string>
-  <key>CFBundleVersion</key><string>1</string>
+  <key>CFBundleShortVersionString</key><string>${VERSION}</string>
+  <key>CFBundleVersion</key><string>${BUILD_NUMBER}</string>
+  ${SPARKLE_PLIST}
   <key>LSMinimumSystemVersion</key><string>15.0</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>LSApplicationCategoryType</key><string>public.app-category.productivity</string>
@@ -123,10 +152,17 @@ ENTPLIST
     echo "Bundled MIP SDK into Frameworks"
   fi
   codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$APP/Contents/Frameworks/MSAL.framework"
+  # Sparkle, inside-out as its docs prescribe (helpers first, framework last; never --deep). The XPC services were
+  # removed above; if they're ever restored (sandboxing), sign Installer.xpc, then Downloader.xpc with
+  # --preserve-metadata=entitlements, before Autoupdate.
+  SPK="$APP/Contents/Frameworks/Sparkle.framework"
+  codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$SPK/Versions/B/Autoupdate"
+  codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$SPK/Versions/B/Updater.app"
+  codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$SPK"
   codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$APP/Contents/MacOS/OfficeMCP"
   codesign --force --options runtime --timestamp --entitlements "$ENT" --sign "$SIGN_IDENTITY" "$APP"
   codesign --verify --strict --verbose=2 "$APP"
-  echo "Built $APP (signed: $SIGN_IDENTITY)"
+  echo "Built $APP (signed: $SIGN_IDENTITY; $VERSION build $BUILD_NUMBER; updates $([[ -n "$SPARKLE_PUBLIC_KEY" ]] && echo on || echo off))"
   # Notarise + staple when a notarytool keychain profile is given (xcrun notarytool store-credentials <name> ...).
   if [[ -n "${NOTARY_PROFILE:-}" ]]; then
     ZIP="build/notarize-upload.zip"
@@ -138,5 +174,5 @@ ENTPLIST
   fi
 else
   codesign --force --deep --sign - "$APP"
-  echo "Built $APP (ad-hoc — fixtures only)"
+  echo "Built $APP (ad-hoc — fixtures only; $VERSION build $BUILD_NUMBER; updates $([[ -n "$SPARKLE_PUBLIC_KEY" ]] && echo on || echo off))"
 fi

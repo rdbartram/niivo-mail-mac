@@ -17,6 +17,7 @@ struct CompliantCalendarApp: App {
         UserDefaults.standard.register(defaults: ["ApplePersistenceIgnoreState": true])
         NSApplication.shared.setActivationPolicy(.regular)
         _ = NiivoFonts.available   // register the bundled brand faces before the first view
+        _ = AppUpdater.shared   // UPDATE-HOOK: start Sparkle's scheduler at launch (no-op when not configured / MDM-off)
         // Start with the app, not the window: the menu-bar item must work with the window closed.
         let m = model
         Task { @MainActor in await m.start() }
@@ -35,6 +36,7 @@ struct CompliantCalendarApp: App {
         .defaultLaunchBehavior(.presented)
         .commands {
             ReaderCommands(model: model)   // READER2-HOOK: ⌘P print, ⌥⌘F find in message
+            UpdateCommands()   // UPDATE-HOOK: app menu → Check for Updates… (AppUpdater.swift)
             CommandGroup(replacing: .appSettings) {
                 Button("Settings…") { model.mail.showSettings = true }.keyboardShortcut(",", modifiers: .command)
                     .disabled(model.trust.hidesContent)

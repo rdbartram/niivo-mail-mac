@@ -178,6 +178,10 @@ TEAM_ID=TEAMID \
 | `PROFILE` | Optional. A provisioning profile to embed, if your entitlements need one |
 | `BUNDLE_ID` | Optional. Overrides the default bundle identifier, and with it the MSAL redirect URI |
 | `BUNDLE_MIP` | `0` leaves the MIP SDK out even when it's present (default `1`) |
+| `VERSION` | Optional. `CFBundleShortVersionString` (default `0.1.0`) |
+| `BUILD_NUMBER` | Optional. `CFBundleVersion`, must increase with every release (default: commit count of `HEAD`) |
+| `SPARKLE_PUBLIC_KEY` | Optional. Sparkle EdDSA public key; empty builds an app with updates off. See [Updates](#updates) |
+| `SPARKLE_FEED_URL` | Optional. Appcast URL (default: this repo's latest GitHub release) |
 
 Without `SIGN_IDENTITY` and `TEAM_ID` the script ad-hoc signs, which is good for debug fixtures only.
 
@@ -202,6 +206,22 @@ things there matter:
 - Microsoft's `redist.txt` lists four dylibs, but the bundle step copies every runtime dylib the SDK ships.
 - Distributed apps must call the SDK's audit API, and this build currently disables audit discovery.
 - Microsoft requires a signed Information Protection Integration Agreement (IPIA) before a public release.
+
+## Updates
+
+Release builds update themselves with [Sparkle 2](https://sparkle-project.org). The app checks
+`https://github.com/rdbartram/niivo-mail-mac/releases/latest/download/appcast.xml`, and Sparkle installs an update
+only if its EdDSA signature matches the public key baked into the app and its Developer ID signature matches the
+installed app. You get **niivo mail → Check for Updates…** in the app menu, and **Settings → Updates** has the
+automatic-check toggle.
+
+- A build without `SPARKLE_PUBLIC_KEY` (forks, local builds) has updates off and says so in Settings.
+- Admins can turn updates off with the managed preference `disableUpdates = true`, or lock the automatic-check toggle
+  by forcing `SUEnableAutomaticChecks`. Both go in the app's domain, via an MDM configuration profile.
+- **Builds from before Sparkle can't update themselves.** Install the first Sparkle-enabled release by hand. After
+  that, updates arrive in the app.
+
+How releases are cut, plus the one-time key setup: [docs/RELEASING.md](docs/RELEASING.md).
 
 ---
 
