@@ -10,10 +10,10 @@ import MailCore
 //   ComposerNotices          capped notices (errors, Purview, MailTips, external warnings)
 // Editor box, inline AI and footer: ComposeInlineAI.swift. Pure rules: MailCore/ComposeLayout.swift (CoreSelfTest).
 
-/// What Retry runs again (set by AIAssistModel.draft / rewrite).
+/// What Try again runs again (set by AIAssistModel.draft / edit). An edit retries on the text it started from.
 enum AIComposerRetry: Equatable {
     case draft(AIReplyIntent?)
-    case rewrite(AIRewriteMode)
+    case edit(AIEditAction, source: String, scope: AIEditScope)
 }
 
 /// Per-composer view state (no @State under CLT).

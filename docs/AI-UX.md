@@ -99,7 +99,7 @@ Each message is classified per call and per tier:
 | 4 | **Commitments and follow-ups** smart list; "waiting on" nudge after N days | List | Designed below, LATER |
 | 5 | **Thread state header**: TL;DR, decisions, open questions, who owes what; collapsible; cites messages | Reader top (⌘⇧S) | Built (on demand, refreshes when the thread grows) |
 | 6 | **Ask / act bar** in ⌘K: answers with citations from local retrieval, bulk actions with plan preview + confirm + undo, NL search | Palette | Built |
-| 7 | **Composer**: AI draft (tone, length, language, instruction), rewrite selection or the whole body (polish, shorten, formal, translate DE/FR/IT/EN) with a side-by-side preview before replacing | Composer | Built. Voice profile and ghost text are LATER |
+| 7 | **Composer**: AI draft (tone, length, language, instruction), editing actions on the selection or the whole body (rewrite, fix grammar, shorten, expand, bullets, tone, translate DE/EN/FR/IT, "Ask AI to change…"), applied into the editor with a marker and undo (docs/COMPOSE-LAYOUT.md "AI inline") | Composer | Built. Ghost text is LATER |
 | 8 | **Meeting prep** "Brief me" in the event inspector | Calendar | LATER (design below) |
 
 ### Interactions
@@ -113,10 +113,12 @@ Each message is classified per call and per tier:
   in the composer.
 - **Thread header.** ⌘⇧S toggles it. Each line carries `[n]` citations, and clicking one selects that message.
 - **Composer.**
-  - The ✨ menu has AI draft…, Rewrite (polish / shorten / formal / friendly / translate) and an instruction field.
-  - Results show in a preview pane (before | after) with Replace and Discard. The previous body is kept, so
-    "Undo AI change" restores it.
-  - A progress spinner and Cancel are always visible while a call runs.
+  - The ✨ menu has Draft Reply… and the intents, the editing actions (selection or whole body), Change Tone ▸,
+    Translate ▸, Ask AI to change… (⌘J) and the voice layers. Items the gate refuses stay visible, disabled, with the
+    reason.
+  - Results land in the editor, editable at once and marked until you edit or keep them. Undo puts back what was
+    there; Try again replaces only the AI text or adds another version below, optionally with an instruction.
+  - A progress spinner and Cancel are always visible while a call runs; the editor stays editable meanwhile.
 - **⌘K.** Typing anything adds "Ask AI: …", "Search: …" and "Do: …" (bulk plan) to the top of the list.
   - Answers open in a small sheet with citations.
   - A bulk plan shows its action, the number of matching messages and the first 10 matches, with Confirm and
@@ -132,6 +134,7 @@ Each message is classified per call and per tier:
 | 1–5 (list focused, message open) | Reply intent chips |
 | ⌥↩ in the search field / "Ask" toggle | Natural-language search |
 | ⌘K, then type | Ask / Search / Do entries |
+| ⌘J (composer) | AI actions palette: type what to change, ↩ runs it |
 | ⌘↩ (composer) | Send. When AI is on, the first press runs the pre-send check; if notes are shown, a second ⌘↩ sends |
 
 The existing keys stay unchanged:

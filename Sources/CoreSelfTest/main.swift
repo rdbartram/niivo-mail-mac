@@ -233,6 +233,7 @@ runLabelProvenanceTests()   // LABELS: foreign tenants, provenance, display rule
 await runAccountsTests()   // ACCOUNTS-HOOK: multiple accounts (docs/ACCOUNTS.md)
 runListLayoutTests()   // LIST: Gmail-style rows, badges, density, clean list
 runComposeLayoutTests()   // COMPOSE-LAYOUT: pane takeover, compact header, inline AI, list label marks
+await runAIEditingTests()   // COMPOSE-LAYOUT: AI text in the editor, actions, undo, gate refusals, voice
 await runThreadTests()   // THREAD-HOOK: conversation view (grouping, actions + undo, gating, paging, timing)
 await runInboxStateTests()   // TRIAGE2-HOOK: conversation triage state (docs/INBOX-INTELLIGENCE-PLAN.md Phase 1)
 await runPromisesTests()   // PROMISES-HOOK: promises ledger

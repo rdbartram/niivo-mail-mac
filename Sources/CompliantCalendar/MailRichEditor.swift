@@ -13,6 +13,8 @@ struct MailRichEditor: NSViewRepresentable {
     var attachBlockReason: String?
     var brand: Bool
     var minHeight: CGFloat = 240
+    /// COMPOSE-LAYOUT: AI text still marked (UTF-16 range in `plain`). Drawn as a temporary attribute only.
+    var aiMark: NSRange? = nil
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -62,6 +64,9 @@ struct MailRichEditor: NSViewRepresentable {
         state.attachBlockReason = attachBlockReason
         if let tv = scroll.documentView as? ComposerTextView, state.textView !== tv { state.textView = tv }
         if plain != state.storage.string { state.reconcile(plain) }   // AI-HOOK: draft / rewrite / undo wrote the body
+        if let lm = (scroll.documentView as? NSTextView)?.layoutManager {
+            context.coordinator.mark(lm, aiMark.flatMap { plain == state.storage.string ? $0 : nil }, length: state.storage.length)
+        }
     }
 
     static func dismantleNSView(_ scroll: NSScrollView, coordinator: Coordinator) {
@@ -73,6 +78,18 @@ struct MailRichEditor: NSViewRepresentable {
     @MainActor
     final class Coordinator: NSObject, NSTextViewDelegate {
         var parent: MailRichEditor?
+        private var lastMark: (range: NSRange?, length: Int)?
+
+        /// The AI marker: a soft accent background as a layout-manager temporary attribute (not in the storage, so
+        /// never in the saved or sent HTML).
+        func mark(_ lm: NSLayoutManager, _ r: NSRange?, length: Int) {
+            if let l = lastMark, l.range == r, l.length == length { return }
+            lastMark = (r, length)
+            let all = NSRange(location: 0, length: length)
+            lm.removeTemporaryAttribute(.backgroundColor, forCharacterRange: all)
+            guard let r, r.length > 0, NSMaxRange(r) <= length else { return }
+            lm.addTemporaryAttribute(.backgroundColor, value: NSColor.controlAccentColor.withAlphaComponent(0.2), forCharacterRange: r)
+        }
 
         func textDidChange(_ n: Notification) {
             guard let s = parent?.state else { return }
@@ -109,6 +126,7 @@ final class ComposerTextView: NSTextView {
         case ([.command], "i"): s.toggle(.nvItalic); return true
         case ([.command], "u"): s.toggle(.nvUnderline); return true
         case ([.command], "k"): s.beginLink(); return true
+        case ([.command], "j"): if s.onAIActions?() == true { return true }; return super.performKeyEquivalent(with: e)   // AI actions
         case ([.command, .shift], "v"), ([.command, .shift, .option], "v"): pasteAsPlainText(nil); return true
         case ([.command, .shift], "x"): s.toggle(.nvStrike); return true
         default:

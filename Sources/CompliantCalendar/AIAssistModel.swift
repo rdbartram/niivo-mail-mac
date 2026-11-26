@@ -14,24 +14,35 @@ final class AIComposerState {
     var busy: String?
     var task: Task<Void, Never>?
     var error: String?
-    /// Side-by-side preview before replacing: (before, after, range in `before` or nil = whole body).
-    var preview: (before: String, after: String, range: Range<String.Index>?)?
-    var undoBody: String?
+    /// COMPOSE-LAYOUT (2026-11-26): AI text that is IN the editor now, marked until the user edits or keeps it
+    /// (MailCore AIAppliedEdit: Undo restores what it replaced, Try again swaps only the AI text).
+    var applied: AIAppliedEdit?
+    /// The running request's target, following the user's typing (the editor stays editable while AI works).
+    var anchor: AIEditAnchor?
     var selection: TextSelection?
     var findings: [AIPreSendFinding] = []
     var checkedHash: Int?
     var checking = false
     var notes: [String] = []
-    // VOICE: layers applied to the last draft, its content-free Why list, the signature plan (applied on Replace).
+    // VOICE: layers applied to the last request, its content-free Why list.
     var voice: VoiceResolution?
     var why: [String] = []
     var showWhy = false
-    var pendingSignature: VoiceSignaturePlan?
-    /// Signature before the last accepted voice draft (undo restores it before the body).
+    /// Voice layers the user switched off for the next request only (reset after it).
+    var voiceOff: Set<VoiceResolution.Kind> = []
+    /// Signature before the applied voice draft (Undo restores it before the body).
     var undoSignature: (id: UUID?, isDefault: Bool)?
-    /// COMPOSE-LAYOUT: what Retry in the inline suggestion bar runs again.
+    /// What Try again runs again.
     var retry: AIComposerRetry?
-    func cancel() { task?.cancel(); task = nil; busy = nil; checking = false }
+    /// ⌘J: the AI actions palette and what the user typed into it.
+    var showActions = false
+    var actionQuery = ""
+    /// "Try again with instruction…" text.
+    var retryInstruction = ""
+    var showRetryInstruction = false
+    func cancel() { task?.cancel(); task = nil; busy = nil; checking = false; anchor = nil }
+    /// The composer went away or was replaced: nothing of this request may land in another draft.
+    func detach() { cancel(); applied = nil; undoSignature = nil; showActions = false }
 }
 
 struct AIAnswerState: Identifiable {
@@ -329,13 +340,55 @@ final class AIAssistModel {
         draft(intent: i)
     }
 
-    func draft(intent: AIReplyIntent? = nil) {
+    // MARK: Gate reasons (the menu shows them on disabled items; the call refuses with the same text)
+
+    /// Why AI can't draft a reply in this composer (nil = it can). Same MailCore check as the call itself.
+    func replyRefusal(_ c: ComposerState) -> String? {
+        if preview != nil { return nil }
+        guard let o = c.original else { return "Drafting a reply needs a message to reply to. Use Ask AI to write new mail." }
+        guard let a = assistant else { return unavailableReason }
+        return a.replyRefusal(original: o, mailbox: mail?.store?.mailbox(forFolder: o.folderId) ?? "me")
+    }
+
+    /// Why the draft's own text can't go to AI (nil = it can): the draft's label (with the reply floor) and the
+    /// organisation's AI policy for the routed tier.
+    func editRefusal(_ c: ComposerState) -> String? {
+        if preview != nil { return nil }
+        guard let a = assistant else { return unavailableReason }
+        return a.editRefusal(labelId: c.labelId)
+    }
+
+    private var unavailableReason: String {
+        if settings.choice == .off { return "AI is off (Settings → AI)" }
+        if app?.trust.hidesContent == true { return "AI is unavailable while content is hidden" }
+        return "AI isn't available right now"
+    }
+
+    /// The voice for this composer's recipients (Me → Organisation → Contact), minus the layers switched off for the
+    /// next request.
+    func voice(for c: ComposerState, language: AILanguage = .auto) -> VoiceResolution? {
+        guard let mail else { return nil }
+        let who = mail.voiceCounterpart(original: c.original, to: c.to)
+        return mail.voiceProfile.resolve(counterpart: who?.address, languageOverride: language, excluding: composer.voiceOff)
+    }
+
+    /// Every layer for the current recipients (the menu's on/off toggles).
+    func voiceLayers(for c: ComposerState) -> [VoiceResolution.Layer] {
+        guard let mail else { return [] }
+        let who = mail.voiceCounterpart(original: c.original, to: c.to)
+        return mail.voiceProfile.resolve(counterpart: who?.address).layers
+    }
+
+    // MARK: 2. Reply drafts (land in the editor)
+
+    func draft(intent: AIReplyIntent? = nil, retryPlacement: AIAppliedEdit.Placement? = nil) {
         guard let mail, let c = mail.composer, let o = c.original, let a = assistant else {
-            composer.error = "AI drafting needs a reply to an existing message"; return
+            composer.error = mail?.composer.flatMap { replyRefusal($0) } ?? "AI drafting needs a reply to an existing message"; return
         }
+        if let why = replyRefusal(c) { composer.error = why; return }   // never a silent call
         let mb = mail.store?.mailbox(forFolder: o.folderId) ?? "me"
         let opts = composer.options
-        composer.retry = .draft(intent)   // COMPOSE-LAYOUT: Retry
+        composer.retry = .draft(intent)
         var slotText: [String] = []
         if intent == .proposeTime, let app {
             let evs = app.aiOwnBusyEvents(from: .now, to: .now.addingTimeInterval(14 * 86400))
@@ -348,7 +401,8 @@ final class AIAssistModel {
         let all = ((try? mail.store?.conversation(id: o.conversationId, limit: 500)) ?? []).filter { !$0.isDraft }
         let newest = Array(all.filter { $0.id != o.id }.sorted { $0.received > $1.received }.prefix(6))
         let who = mail.voiceCounterpart(original: o, to: c.to)
-        let voice = mail.voiceProfile.resolve(counterpart: who?.address, languageOverride: opts.language)
+        let voice = mail.voiceProfile.resolve(counterpart: who?.address, languageOverride: opts.language, excluding: composer.voiceOff)
+        composer.voiceOff = []   // one request only
         let contextLines = TriageContext.lines(for: o, me: me, thread: all)
         var sent: [MailMessage] = []
         if let store = mail.store, let addr = who?.address, let p = a.route(.draftReply) {
@@ -361,49 +415,113 @@ final class AIAssistModel {
         }
         let sigPlain = c.editor.signaturePlain
         let state = composer
+        // Where it goes: an empty reply gets the draft; text the user already wrote stays and the draft goes below.
+        let target = AIEditText.target(body: c.body, selection: nil, signaturePlain: sigPlain)
+        let placement: AIAppliedEdit.Placement = target.scope == .empty ? .replace : .insertBelow
+        if retryPlacement == nil || state.applied == nil { state.anchor = AIEditAnchor(body: c.body, range: target.range) }
         run("Drafting…", on: composer) { [weak self] in
             let full = await self?.withBodies([o] + newest, mailbox: mb, feature: .draftReply, limit: 6) ?? [o]
             let examples = await self?.withBodies(sent, mailbox: mb, feature: .draftReply, limit: 3) ?? []
             let req = AIVoiceRequest(original: full[0], mailbox: mb, thread: Array(full.dropFirst()), styleExamples: examples,
                                      contextLines: contextLines, voice: voice, intent: intent, options: opts, slots: slotText, userName: name)
             let r = try await a.draftReplyInVoice(req, signaturePlain: sigPlain.isEmpty ? nil : sigPlain)
+            guard let self, self.mail?.composer === c, self.composer === state else { return }   // that draft is gone
             let used = voice.formality != .auto ? voice.formality : (r.formalityUsed ?? .auto)
             let facts = VoiceSignatureFacts.from(counterpart: who?.address, thread: all, me: me, formality: used)
             state.voice = r.voice; state.why = r.why
-            state.pendingSignature = VoiceSignature.decide(model: r.wantsSignature, facts: facts)
             state.notes = r.notes + (slotText.isEmpty ? [] : ["Planned: hold these slots as tentative (not created yet)"])
-            state.preview = (c.body, r.text, nil)
-            if let m = self?.mail { VoiceLearnModel.shared.refineWithAI(mail: m) }   // VOICE2-HOOK: the user asked for AI here
+            self.land(r.text, in: c, origin: .draft, placement: retryPlacement ?? placement, retry: retryPlacement != nil,
+                      separate: true, signaturePlan: VoiceSignature.decide(model: r.wantsSignature, facts: facts))
+            if let m = self.mail { VoiceLearnModel.shared.refineWithAI(mail: m) }   // VOICE2-HOOK: the user asked for AI here
         }
     }
 
-    // MARK: 7. Rewrite
+    // MARK: 7. Editing actions (selection or whole body; land in the editor)
 
-    func rewrite(_ mode: AIRewriteMode) {
-        guard let c = mail?.composer, let a = assistant else { return }
-        var range: Range<String.Index>?
-        if case .selection(let r)? = composer.selection?.indices, !r.isEmpty, r.upperBound <= c.body.endIndex { range = r }
-        let before = c.body
-        let text = range.map { String(before[$0]) } ?? before
-        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        composer.pendingSignature = nil   // VOICE: a rewrite never toggles the signature
-        composer.retry = .rewrite(mode)   // COMPOSE-LAYOUT: Retry
-        run("\(mode.title)…", on: composer) { [weak self] in
-            let r = try await a.rewrite(text, labelId: c.labelId, mode: mode)
-            self?.composer.preview = (before, r.text, range)
+    func rewrite(_ mode: AIRewriteMode) { edit(AIEditAction(mode)) }
+
+    /// Runs an AI editing action on the selection (or the whole text) and applies the result with undo.
+    /// `source` / `retryPlacement`: Try again on the text the first try started from.
+    func edit(_ action: AIEditAction, source: (text: String, scope: AIEditScope)? = nil, retryPlacement: AIAppliedEdit.Placement? = nil) {
+        guard let mail, let c = mail.composer else { return }
+        guard let a = assistant else { composer.error = editRefusal(c); return }
+        if let why = a.editRefusal(labelId: c.labelId) { composer.error = why; return }   // never a silent call
+        let s = composer
+        let target: AIEditTarget
+        if let src = source, let ap = s.applied, retryPlacement != nil {
+            target = AIEditTarget(range: ap.span, text: src.text, scope: src.scope)
+        } else {
+            let tv = c.editor.textView?.selectedRange()
+            let sel = tv.flatMap { $0.length > 0 ? $0.location..<($0.location + $0.length) : nil }
+            target = AIEditText.target(body: c.body, selection: sel, signaturePlain: c.editor.signaturePlain)
+        }
+        if target.scope == .empty, !action.isCustom {
+            s.error = "Write something first, or ask AI to write it (⌘J)"; return
+        }
+        if AIEditText.tooLong(target) { s.error = AIEditText.tooLongMessage; return }
+        let voice = self.voice(for: c)
+        s.voiceOff = []   // one request only
+        s.retry = .edit(action, source: target.text, scope: target.scope)
+        s.voice = voice
+        var why = [target.scope == .selection ? "Sent: only your selection (\(target.text.count) characters)"
+                   : target.scope == .body ? "Sent: only your text (signature and quoted history not included)"
+                   : "Sent: only your instruction"]
+        why += voice?.summary ?? []
+        s.why = why
+        s.notes = []
+        if retryPlacement == nil || s.applied == nil { s.anchor = AIEditAnchor(body: c.body, range: target.range) }
+        run(action.progress, on: s) { [weak self] in
+            let r = try await a.edit(target.text, scope: target.scope, labelId: c.labelId, action: action, voice: voice)
+            guard let self, self.mail?.composer === c, self.composer === s else { return }
+            self.land(r.text, in: c, origin: .edit, placement: retryPlacement ?? .replace, retry: retryPlacement != nil,
+                      separate: target.scope != .selection)
         }
     }
 
-    func acceptPreview() {
-        guard let c = mail?.composer, let p = composer.preview else { return }
-        let voiceDraft = p.range == nil && composer.pendingSignature != nil   // VOICE2-HOOK
-        composer.undoBody = c.body
-        composer.undoSignature = nil
-        var after = p.after
+    /// Try again (Replace the AI text, or Add another version below), optionally with an extra instruction.
+    func tryAgain(_ placement: AIAppliedEdit.Placement, instruction: String? = nil) {
+        guard let r = composer.retry else { return }
+        let instr = instruction?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let p: AIAppliedEdit.Placement? = composer.applied == nil ? nil : placement
+        switch r {
+        case .draft(let i):
+            if !instr.isEmpty { composer.options.instruction = instr }
+            draft(intent: i, retryPlacement: p)
+        case .edit(let action, let source, let scope):
+            let act: AIEditAction
+            if instr.isEmpty { act = action }
+            else if case .custom = action { act = .custom(instr) }
+            else { act = .custom(action.title + ". " + instr) }
+            edit(act, source: (source, scope), retryPlacement: p)
+        }
+    }
+
+    /// The one place AI text enters the editor: applied, marked, undoable.
+    private func land(_ text: String, in c: ComposerState, origin: AIAppliedEdit.Origin, placement: AIAppliedEdit.Placement,
+                      retry: Bool, separate: Bool, signaturePlan: VoiceSignaturePlan? = nil) {
+        let s = composer
+        c.editor.reconcile(c.body)   // storage and body in step before any signature switch
+        if retry {
+            guard var prev = s.applied, case .land(let placement) = AIRetryLanding.decide(applied: s.applied, requested: placement) else {
+                s.notes.append("The AI text was undone or kept before the new version arrived, so nothing was changed.")
+                return
+            }
+            prev.track(c.body)
+            var out = text
+            if origin == .draft, !c.editor.signaturePlain.isEmpty { out = VoiceSignature.dedupeName(out, signaturePlain: c.editor.signaturePlain) }
+            let next = prev.retried(text: out, placement: placement)
+            s.applied = next; s.anchor = nil
+            c.body = next.body
+            if let mail { VoiceLearnModel.shared.accepted(c, voiceDraft: origin == .draft, mail: mail) }   // VOICE2-HOOK: baseline
+            return
+        }
+        // A new request over an older AI text: the older one is the user's now.
+        s.applied = nil
         // VOICE: toggle the composer's signature (never paste it into the text) before the body goes in.
-        if p.range == nil, let plan = composer.pendingSignature, let mail {
+        var out = text
+        if origin == .draft, let plan = signaturePlan, let mail {
             let e = c.editor
-            composer.undoSignature = (e.signatureId, e.signatureIsDefault)
+            s.undoSignature = (e.signatureId, e.signatureIsDefault)
             switch plan {
             case .full:
                 if e.signatureId == nil, let sig = mail.composerPrefs.defaultSignature(identity: c.from?.address, reply: true) {
@@ -413,23 +531,57 @@ final class AIAssistModel {
             case .unchanged: break
             }
             // The sign-off name would repeat the signature's first line ("Jordan Miller" twice): drop it.
-            if !e.signaturePlain.isEmpty { after = VoiceSignature.dedupeName(after, signaturePlain: e.signaturePlain) }
+            if !e.signaturePlain.isEmpty { out = VoiceSignature.dedupeName(out, signaturePlain: e.signaturePlain) }
+        } else { s.undoSignature = nil }
+        var anchor = s.anchor ?? AIEditAnchor(body: c.body, range: AIEditText.target(body: c.body, selection: nil, signaturePlain: c.editor.signaturePlain).range)
+        anchor.track(c.body)
+        s.anchor = nil
+        let spot = anchor.placement(requested: placement)
+        guard let next = AIAppliedEdit.apply(body: c.body, target: spot.range, text: out, placement: spot.placement,
+                                             origin: origin, separateFromFollowing: separate) else {
+            s.error = "The text changed too much while AI was working; nothing was changed"; return
         }
-        composer.pendingSignature = nil
-        c.body = AISuggestionText.apply(body: c.body, before: p.before, after: after, range: p.range)   // COMPOSE-LAYOUT: pure transform (MailCore)
-        composer.preview = nil
-        if let mail { VoiceLearnModel.shared.accepted(c, voiceDraft: voiceDraft, mail: mail) }   // VOICE2-HOOK: diff baseline
+        if spot.moved { s.notes.append("You edited that text while AI was working, so the result was added below it.") }
+        s.applied = next
+        c.body = next.body
+        if let mail { VoiceLearnModel.shared.accepted(c, voiceDraft: origin == .draft, mail: mail) }   // VOICE2-HOOK: edits after this feed VoiceEdit
     }
 
-    func undoAI() {
-        guard let c = mail?.composer, let u = composer.undoBody else { return }
+    /// Keep: the AI text is the user's (marker off). Sending keeps it too.
+    func keepApplied() {
+        guard composer.applied != nil else { return }
+        composer.applied = nil; composer.undoSignature = nil
+    }
+
+    /// Undo: what the AI text replaced comes back (and the signature it switched); edits elsewhere stay.
+    func undoApplied() {
+        guard let c = mail?.composer, composer.applied != nil else { return }
+        composer.cancel()   // a Try again still running must not land after the Undo
+        c.editor.reconcile(c.body)
         if let (id, isDefault) = composer.undoSignature, let mail, id != c.editor.signatureId {
-            c.editor.applySignature(mail.composerPrefs.signature(id: id), byUser: false)
+            c.editor.applySignature(mail.composerPrefs.signature(id: id), byUser: false)   // tracked via bodyChanged
             c.editor.signatureIsDefault = isDefault
         }
         composer.undoSignature = nil
-        c.body = u; composer.undoBody = nil
-        VoiceLearnModel.shared.undone(c)   // VOICE2-HOOK
+        guard var ap = composer.applied else { return }
+        ap.track(c.body)
+        composer.applied = nil
+        c.body = ap.undone
+        if ap.origin == .draft { VoiceLearnModel.shared.undone(c) }   // VOICE2-HOOK
+        else if let mail { VoiceLearnModel.shared.accepted(c, voiceDraft: false, mail: mail) }
+    }
+
+    /// Every change of the primary composer's body (typing, ⌘Z, signature switch): the AI span and a running
+    /// request's target follow it.
+    func bodyChanged(_ c: ComposerState) {
+        guard mail?.composer === c else { return }
+        composer.anchor?.track(c.body)
+        guard composer.applied != nil else { return }
+        if composer.applied?.track(c.body) == .reverted {   // ⌘Z all the way back = Undo
+            let o = composer.applied?.origin
+            composer.applied = nil; composer.undoSignature = nil
+            if o == .draft { VoiceLearnModel.shared.undone(c) }
+        }
     }
 
     // MARK: 3. Pre-send (true = intercepted; ⌘↩ again sends)

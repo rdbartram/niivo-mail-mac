@@ -46,6 +46,8 @@ final class ComposerEditorState {
     var detectedLanguage: DraftLanguage?
     /// `;shortcut` → template (set per composer by MailModel.wireTemplates).
     @ObservationIgnored var templateLookup: ((String) -> RichDoc?)?
+    /// ⌘J in the editor: open the AI actions (true = handled). Set by ComposerEditorBox.
+    @ObservationIgnored var onAIActions: (() -> Bool)?
     var signatureId: UUID?
     /// The signature is the identity's default (switching From swaps it); false once the user picks one.
     var signatureIsDefault = true

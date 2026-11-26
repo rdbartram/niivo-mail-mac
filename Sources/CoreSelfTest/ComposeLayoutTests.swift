@@ -3,7 +3,7 @@ import CalendarCore
 import MailCore
 
 // Compose + reading pane layout (docs/COMPOSE-LAYOUT.md): header visibility, strip, Esc, conversation collapse,
-// AI suggestion phases + body transform, list label marks and the chips toggle. Pure rules only, no UI.
+// list label marks (AI in the editor: AIEditingTests.swift) and the chips toggle. Pure rules only, no UI.
 @MainActor
 func runComposeLayoutTests() {
     section("Compose layout: header, strip, Esc, AI suggestion, list label marks")
@@ -29,11 +29,12 @@ func runComposeLayoutTests() {
     check(strip.expanded == false, "original collapsed to the strip by default")
     strip.toggle(); check(strip.expanded, "Show original expands")
     strip.toggle(); check(!strip.expanded, "…and collapses again")
-    check(C.escape(suggestionPending: true, originalExpanded: true) == .discardSuggestion
-          && C.escape(suggestionPending: false, originalExpanded: true) == .collapseOriginal
-          && C.escape(suggestionPending: false, originalExpanded: false) == .closeComposer,
-          "Esc: discard suggestion → collapse original → close (save / empty closes silently)")
-    check(!C.sendEnabled(suggestionPending: true) && C.sendEnabled(suggestionPending: false), "send waits for Keep / Discard")
+    check(C.escape(aiMarked: true, originalExpanded: true) == .undoAIText
+          && C.escape(aiMarked: false, originalExpanded: true) == .collapseOriginal
+          && C.escape(aiMarked: false, originalExpanded: false) == .closeComposer,
+          "Esc: undo marked AI text → collapse original → close (save / empty closes silently)")
+    check(!C.sendEnabled(aiWorking: true) && C.sendEnabled(aiWorking: false),
+          "send waits only while AI is still working (AI text already in the body is sent as the user's)")
 
     // Conversation view while replying
     let members = ["m1", "m2", "m3"]
@@ -43,33 +44,7 @@ func runComposeLayoutTests() {
           && C.replyExpansion(expanded: ["m1"], members: members, answering: "other") == ["m1"],
           "no reply in this thread: the user's own expansion is untouched")
 
-    // AI suggestion: phases follow the existing AIComposerState fields
-    let P = AISuggestionPhase.self
-    check(P.of(busy: false, hasPreview: false, canUndo: false) == .idle, "AI: idle")
-    check(P.of(busy: true, hasPreview: false, canUndo: true) == .working, "AI: working wins")
-    check(P.of(busy: false, hasPreview: true, canUndo: false) == .pending, "AI: suggestion pending (Keep / Retry / Discard)")
-    check(P.of(busy: false, hasPreview: false, canUndo: true) == .kept, "AI: kept → one undo available")
-    check(P.of(busy: false, hasPreview: true, canUndo: true) == .pending, "AI: a new suggestion over a kept one is pending")
-
-    // AI suggestion: Keep's body transform (acceptPreview) + pending rendering
-    let T = AISuggestionText.self
-    let before = "Hi Anna,\nthanks for the note.\nBest"
-    let r = before.range(of: "thanks for the note.")!
-    check(T.apply(body: before, before: before, after: "Thank you so much.", range: r) == "Hi Anna,\nThank you so much.\nBest",
-          "Keep a rewrite: only the selection is replaced")
-    check(T.apply(body: before, before: before, after: "New draft", range: nil) == "New draft", "Keep a draft: the body is replaced")
-    check(T.apply(body: before + "!", before: before, after: "X", range: r) == "X", "body changed since: whole replace (old behaviour)")
-    let seg = T.segments(before: before, after: "Thank you so much.", range: r)
-    check(seg.prefix == "Hi Anna,\n" && seg.suggestion == "Thank you so much." && seg.suffix == "\nBest",
-          "pending rewrite renders prefix · highlighted suggestion · suffix")
-    let whole = T.segments(before: before, after: "Draft", range: nil)
-    check(whole.prefix.isEmpty && whole.suggestion == "Draft" && whole.suffix.isEmpty, "pending draft is all suggestion")
-    // Undo state transition (acceptPreview → undoAI) modelled on the same fields
-    var body = before, undo: String? = nil, preview: (String, String, Range<String.Index>?)? = (before, "Thank you.", r)
-    if let p = preview { undo = body; body = T.apply(body: body, before: p.0, after: p.1, range: p.2); preview = nil }
-    check(P.of(busy: false, hasPreview: preview != nil, canUndo: undo != nil) == .kept && body.contains("Thank you."), "Keep → kept")
-    if let u = undo { body = u; undo = nil }
-    check(body == before && P.of(busy: false, hasPreview: false, canUndo: undo != nil) == .idle, "one undo restores the previous text")
+    // AI in the editor: AIEditingTests.swift
 
     // List: label marks
     let pub = SensitivityLabel(id: "p", name: "Public", priority: 0)
