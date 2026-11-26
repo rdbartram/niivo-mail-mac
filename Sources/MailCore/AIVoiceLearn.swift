@@ -422,6 +422,7 @@ public struct VoiceNudgeLog: Codable, Sendable, Hashable {
         public var kind: VoiceEditKind
         public var contact: String
         public var at: Date
+        public init(kind: VoiceEditKind, contact: String, at: Date) { self.kind = kind; self.contact = contact; self.at = at }
     }
     public var events: [Event] = []
     public var lastShown: [String: Date] = [:]
@@ -525,7 +526,10 @@ public enum VoiceNudges {
 
     /// Records every edit (so the "≥3 contacts → Me" count works even while a contact is rate-limited), then decides
     /// on at most one nudge and stamps it as shown.
-    public static func afterSend(_ e: VoiceEdit, contact: String, name: String, log: inout VoiceNudgeLog, now: Date) -> VoiceNudge? {
+    /// ONBOARDING: `allowMe` / `allowContact` follow the "Learn my voice" modes (a layer that is Off never gets a nudge,
+    /// and its turn doesn't use up the rate limit). Defaults keep the behaviour from before the modes.
+    public static func afterSend(_ e: VoiceEdit, contact: String, name: String, log: inout VoiceNudgeLog, now: Date,
+                                 allowMe: Bool = true, allowContact: Bool = true) -> VoiceNudge? {
         let a = contact.lowercased()
         prune(&log, now: now)
         for k in e.kinds { log.events.append(.init(kind: k, contact: a, at: now)) }
@@ -534,7 +538,7 @@ public enum VoiceNudges {
             let contacts = Set(log.events.filter { $0.kind == k }.map(\.contact))
             // ≥ 3 contacts → Me first; Me muted or rate-limited → still offer it for this contact.
             let targets: [Bool] = contacts.count >= meThreshold && k != .changedLanguage ? [true, false] : [false]
-            for me in targets {
+            for me in targets where me ? allowMe : allowContact {
                 let target: VoiceNudge.Target = me ? .me : .contact(address: a, name: name)
                 let n = VoiceNudge(kind: k, target: target, language: e.language, text: text(k, name: name, me: me, language: e.language))
                 if allowed(n.key, log, now: now) { log.lastShown[n.key] = now; return n }
