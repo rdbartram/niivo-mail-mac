@@ -326,7 +326,7 @@ plus the best ideas from Superhuman, Spark, HEY, Mimestream, Apple Mail, Thunder
 | DLP policy tips before send | Missing | P2 | Purview | No third-party API. MailTips is a partial stand-in |
 | External recipient warning | Done | P0 | Outlook | Composer + pre-send check |
 | Screen-capture exclusion, app lock, encrypted cache | Done | P0 | — | TrustCore |
-| Remote wipe / revocation / offline grace / signed tenant policy | Engine only (NOT wired) | P0 | — | TrustCore engine is tested but the app never calls `RevocationGuard`, `WipeGroupCheck`, `OfflineGraceClock` or `DefaultWipeExecutor`; `TrustModel` loads policy with `tenantJSON: nil`. First item of accounts phase 0 (`ACCOUNTS-PROVIDERS-PLAN.md`), made per-account. |
+| Remote wipe / revocation / offline grace / signed tenant policy | Done (UNVERIFIED live) | P0 | — | Wired per account: `SessionEnforcer` (TrustCore/Enforcement.swift) fed by the calendar + mail token paths (`Auth.onSession`, TrustWiring.swift); prompt / session lock / per-account wipe (stores, vault slots, keychain items, MSAL account, MIP cache; tombstone per account); launch probe before stores open, unlock + 60 s tick, inactive accounts probed; `checkMemberGroups` on `wipeGroupCheckMinutes`; signed policy from managed prefs or `trust-policy.json` + `.sig` next to config.json, keys from a forced pref. Never run against a real revocation; CP1 still opt-in (calendar doesn't answer claims challenges). |
 | Audit log | Done | P1 | — | Sealed |
 
 ## 13. Settings

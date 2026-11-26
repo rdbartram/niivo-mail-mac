@@ -45,7 +45,7 @@ problem is how we use them.
 | Adversary | What we try to do |
 |---|---|
 | **Someone with a lost or stolen laptop** | The cache is encrypted with keys that the Secure Enclave wraps behind user presence. The app locks. Labelled bodies aren't kept offline on BYOD |
-| **A user whose access was revoked** (left the company, disabled, removed from the app) | Designed: lock, then wipe on an authoritative signal from Entra. **Engine only**, see below |
+| **A user whose access was revoked** (left the company, disabled, removed from the app) | Lock, then wipe *that account's* data on an authoritative signal from Entra, a wipe-group hit or the offline deadline. **Enforced; unverified live**, see below |
 | **Other local apps running as the same user** | No plaintext content on disk. Cache keys are stored only as wrapped blobs, and the key that unwraps them is non-exportable in the Secure Enclave and needs user presence. MSAL tokens (and the no-SE fallback key) are in the keychain under our access group. The MCP relay socket needs a per-run token |
 | **AI and cloud leakage** | One label gate in front of every AI feature and every MCP tool. Fail closed. On-device models are preferred |
 | **Content injected by a hostile email** (prompt injection, tracking) | Mail is sanitised and wrapped as untrusted text in prompts. The reader runs with JavaScript off, a strict CSP, and remote content blocked by default |
@@ -134,7 +134,7 @@ telemetry with no local telemetry cache (`native/mipbridge/niivo_mipbridge.cpp`)
 | `cacheWindowMaxDays` (mail history kept offline) | 30 | 365 |
 | Offline bodies for labelled mail | no | yes |
 | App lock | Touch ID / password, 5 min idle | off |
-| Offline grace → lock / wipe (**engine only**, see below) | 3 d / 14 d | 14 d / 60 d |
+| Offline grace → lock / wipe (**enforced; unverified live**, see below) | 3 d / 14 d | 14 d / 60 d |
 | Requires FileVault, SIP | yes | yes |
 | Requires screen lock | yes | no |
 | AI access | follow labels | follow labels |
@@ -155,13 +155,20 @@ notarisation and the Secure Enclave. It uses read-only status tools, so it needs
 `Sources/TrustCore/PolicyLoader.swift` merges the sources in this order:
 
 1. **Profile defaults.** Enforced.
-2. **A signed tenant policy.** It may only *tighten*. **Engine only.**
-   - `trust-policy.json` plus a detached **Ed25519** signature, verified over the exact bytes against pinned keys.
-   - Checked for validity window, tenant ID, maximum age and clock skew, with anti-rollback on the version.
-   - Designed to be fetched from SharePoint/OneDrive in *your* tenant with your delegated token, with no vendor
-     server involved.
-   - Verification is implemented and tested, but the app doesn't fetch a policy yet and ships no pinned keys
-     (`Sources/CompliantCalendar/TrustModel.swift`, `reloadPolicy`).
+2. **A signed tenant policy.** It may only *tighten*. **Enforced; unverified live** (no tenant has deployed one).
+   - A policy document plus a detached **Ed25519** signature, verified over the exact bytes against pinned keys.
+   - Checked for validity window, tenant ID, maximum age and clock skew, with anti-rollback on the version (the
+     highest version applied is persisted, so an older document is rejected after a newer one).
+   - **Delivery** (`TenantPolicySource`, `Sources/TrustCore/Enforcement.swift`). There is no niivo server and no
+     defined SharePoint location, so the app fetches nothing. The document comes from either:
+     - **managed preferences** for the app's bundle id (`tenantPolicyDocument` as Data or as the JSON text / its
+       base64, plus `tenantPolicySignature`), or
+     - a file pair **next to `config.json`**: `trust-policy.json` and `trust-policy.json.sig`.
+   - **Keys** come only from a **forced** managed preference `tenantPolicyPinnedKeys` (`["keyId:base64-raw-key"]`),
+     optionally bound with a forced `tenantPolicyTenantId`. Without forced keys, any document is rejected, so a user
+     can't pin a key of their own. The app ships no keys.
+   - Honest limit: on BYOD the user can delete the file pair, which falls back to the (strict) BYOD defaults. A
+     document delivered by MDM can't be removed by the user.
 3. **Unforced managed preferences** (for example, your own `defaults write`). These only tighten. Enforced.
 4. **MDM-forced keys.** These are applied last and are the only source allowed to relax a setting, because the
    device is already governed. Enforced.
@@ -175,14 +182,43 @@ Each key is decoded separately, so one bad value doesn't throw away the rest. "T
 - the open-in allowlist: intersection
 - the AI level: minimum
 
-### Session health, revocation and wipe (Engine only)
+### Session health, revocation and wipe (Enforced; unverified live)
 
-The design, in `Sources/TrustCore/SessionHealth.swift` and `Sources/TrustCore/Wipe.swift`, is implemented and
-self-tested. **The live app doesn't call it yet.** Today it shows the grace values in Settings, and the only wipe it
-can run is a simulation in fixture mode that never builds the real executor. Until this is wired, a revoked user's
-existing cache is protected only by the app lock and the Secure Enclave keys, not by a wipe.
+The engine is `Sources/TrustCore/SessionHealth.swift` and `Sources/TrustCore/Wipe.swift`; the layer the app calls is
+`Sources/TrustCore/Enforcement.swift` (`SessionEnforcer`, `TrustEnforcement`, `AccountWipeLayout`), and the app side is
+`Sources/CompliantCalendar/TrustWiring.swift`. All of it is covered by `CoreSelfTest` with fakes (no network). **None of
+it has been run against a real revocation in a real tenant yet.**
 
-The intended behaviour:
+How the app uses it:
+
+- **Inputs.** Every MSAL result on the calendar and mail token paths (silent refresh, the mail reauthentication,
+  interactive sign-in failures that name an account) goes to `SessionEnforcer`. MSAL errors are read with MSAL's own
+  userInfo constants. Optional scope sets (groups, OneDrive, people, To Do, presence) don't count: their failures are
+  usually missing consent.
+- **When.** At launch the active account refreshes once (bounded to 10 s) *before* any store opens, and interrupted
+  wipes are finished first. The decision runs again on every failure, on unlock, and on a 60 s tick. Other cached
+  accounts refresh silently at launch and every 6 h, so each has its own grace clock.
+- **Actions** (`TrustEnforcement.action`):
+  - **Prompt** for MFA, Conditional Access, consent, interaction required and claims challenges: today's "Sign-in
+    required" state; cached content stays visible.
+  - **Lock** for 50173/50133, a first unconfirmed revocation strike, offline grace exceeded, and a wiped account
+    awaiting sign-in. Content is hidden, the stores are closed and the cache keys leave memory until a fresh token
+    (or, for a wiped account, the confirmation below).
+  - **Wipe** for a revoked account, a wipe-group hit or the offline deadline.
+- **Per account.** Errors, strikes, grace clocks and wipe-group results are kept per account. A wipe of account A
+  removes A's calendar and mail stores (and sidecars), A's vault slots (crypto-shred), A's legacy keychain items and
+  A's MSAL account, plus the shared MIP licence cache (re-fetchable). Other accounts' stores, keys and sign-ins, the
+  vault key and the account registry stay readable. The tombstone is per account and lives outside every wiped path.
+  If the wiped account was the active one, the window explains what happened and offers to sign in again or continue
+  with another account. Posture never wipes; no device-level wipe trigger exists today.
+- **Coming back.** A tombstone is cleared only after an interactive sign-in, a successful Graph call and, if the
+  policy sets a wipe group, a negative wipe-group check. Until then that account's stores are never opened.
+- **Upgrade note.** An install with no recorded refresh is treated as "never refreshed": if the first launch after
+  updating is offline, the session locks until a refresh succeeds.
+- **CAE.** The `CP1` client capability stays opt-in (`defaults write <bundle id> auth.caeCP1 -bool YES`): the
+  calendar service doesn't yet answer a claims challenge.
+
+The rules:
 
 - **Classification by explicit allowlist.** Only AADSTS codes listed in `AADSTSCatalog` with a `revoked` outcome can
   cause a wipe. That means a disabled, deleted or unassigned user, or a deleted app. Each entry cites its Microsoft Learn
@@ -196,9 +232,15 @@ The intended behaviour:
 - **Misconfiguration guard.** Codes that also fit a wrong tenant or client ID (50034, 500341, 700016, 50105) only
   count as revoked for a tenant and client that have signed in successfully before.
 - **Two strikes on silent refresh.** A revoked result on the background refresh path has to repeat at least 60 s
-  later before it counts. An interactive result is authoritative straight away.
-- **Wipe group (optional).** Membership of an Entra group, checked with `checkMemberGroups`, means wipe. A failed
-  check never wipes.
+  later before it counts. An interactive result is authoritative straight away. A result MSAL replays from its
+  throttling cache is treated as transient (not an independent strike). Unverified: if MSAL drops the refresh token
+  after the first `invalid_grant`, the second silent call can't carry the code; the session then stays locked and
+  only an interactive sign-in decides.
+- **Locks are sticky.** Once locked (50173/50133 or a first strike), a later, milder failure such as "interaction
+  required" doesn't turn the lock back into a prompt; only a successful token clears it.
+- **Wipe group (optional).** Membership of an Entra group, checked with `checkMemberGroups` every
+  `wipeGroupCheckMinutes` (default 60, minimum 5; a policy can only shorten it), means wipe. It needs the
+  admin-consented `GroupMember.Read.All`. A failed check never wipes and isn't counted as a check.
 - **Offline grace clock.** With no successful refresh for `offlineGraceDays` the app locks, and after
   `offlineWipeDays` it wipes. A high-water mark means winding the system clock back doesn't extend the grace period.
 - **Wipe order:**

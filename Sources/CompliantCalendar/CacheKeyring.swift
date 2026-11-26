@@ -139,6 +139,11 @@ final class CacheKeyring {
         KeychainCacheKey.destroy(account: account)
     }
 
+    /// Per-account wipe: the vault slots are already gone (TrustCore `VaultSlotShredder`); drop the in-memory copies.
+    func forget(account: String) {
+        for p in VaultPurpose.allCases { keys[Self.slot(account, p)] = nil }
+    }
+
     /// Deletes a SQLite cache file and its sidecars (used when its key is fresh: the old contents are unreadable).
     static func discardStaleCache(at url: URL) {
         for suffix in ["", "-wal", "-shm", "-journal"] {

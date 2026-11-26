@@ -1,5 +1,6 @@
 import AppKit
 import CalendarCore
+import TrustCore
 @preconcurrency import MSAL
 
 /// Tenant configuration. Lowest first: Info.plist defaults (`NiivoClientID` / `NiivoTenantID`, baked in by
@@ -122,6 +123,16 @@ final class Auth {
 
     private let app: MSALPublicClientApplication
     private(set) var account: MSALAccount?
+
+    /// TRUST-WIRING: every result on the calendar and mail token paths (silent refresh, mail reauthentication) goes to
+    /// the session enforcer (AppModel.handleSession). Optional scope sets (groups, drive, people…) don't report: their
+    /// failures are usually missing consent and must not lock or prompt the whole session.
+    enum SessionEvent {
+        case success(account: String)
+        case failure(account: String, error: Error, path: AuthPath)
+    }
+    var onSession: ((SessionEvent) -> Void)?
+    private func report(_ e: SessionEvent) { onSession?(e) }
     private(set) var lastCacheError: String?
 
     /// ACCOUNTS-HOOK: which signed-in account this Auth serves. nil → the active account (persisted id), else the only
@@ -265,12 +276,15 @@ final class Auth {
         var claimsError: NSError?
         let request = claims.flatMap { MSALClaimsRequest(jsonString: $0, error: &claimsError) }
         if claims != nil, request == nil { throw claimsError ?? NSError(domain: "Auth", code: 3, userInfo: [NSLocalizedDescriptionKey: "Unreadable claims challenge"]) }
+        let id = account.homeAccountId?.identifier
         do {
             let p = MSALSilentTokenParameters(scopes: Self.mailScopes, account: account)
             p.authority = accountAuthority   // ACCOUNTS-HOOK
             p.claimsRequest = request
             p.forceRefresh = claims == nil
-            _ = try await app.acquireTokenSilent(with: p)
+            do { _ = try await app.acquireTokenSilent(with: p) }
+            catch { if let id { report(.failure(account: id, error: error, path: .silentRefresh)) }; throw error }
+            if let id { report(.success(account: id)) }
             return
         } catch where interactive {
             let main = NSApp.windows.first { ($0.identifier?.rawValue ?? "").hasPrefix("main") && $0.isVisible }
@@ -282,8 +296,14 @@ final class Auth {
                                                         webviewParameters: MSALWebviewParameters(authPresentationViewController: vc))
             params.account = account
             params.claimsRequest = request
-            let result = try await app.acquireToken(with: params)
+            let result: MSALResult
+            do { result = try await app.acquireToken(with: params) }
+            catch {
+                if let id, !AuthFailure.isUserCancel(error) { report(.failure(account: id, error: error, path: .interactive)) }
+                throw error
+            }
             self.account = result.account
+            if let id = result.account.homeAccountId?.identifier { report(.success(account: id)) }
         }
     }
 
@@ -362,8 +382,17 @@ final class Auth {
         guard let account else { throw NSError(domain: "Auth", code: 2, userInfo: [NSLocalizedDescriptionKey: "Not signed in"]) }
         let p = MSALSilentTokenParameters(scopes: scopes, account: account)
         p.authority = accountAuthority   // ACCOUNTS-HOOK: the account's own tenant
-        let result = try await app.acquireTokenSilent(with: p)
-        return result.accessToken
+        // TRUST-WIRING: only the calendar and mail sets feed the session enforcer.
+        let enforced = scopes == Self.calendarScopes || scopes == Self.mailScopes
+        let id = account.homeAccountId?.identifier
+        do {
+            let result = try await app.acquireTokenSilent(with: p)
+            if enforced, let id { report(.success(account: id)) }
+            return result.accessToken
+        } catch {
+            if enforced, let id { report(.failure(account: id, error: error, path: .silentRefresh)) }
+            throw error
+        }
     }
 
     func signOut() {

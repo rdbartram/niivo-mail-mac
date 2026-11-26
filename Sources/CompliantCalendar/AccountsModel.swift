@@ -29,7 +29,7 @@ final class AccountsModel {
     private var fileURL: URL { AppConfig.supportDir.appending(path: AccountStoreNaming.registryFile) }
 
     /// Opens (or migrates) the registry. Needs the keyring unlocked; does nothing while locked.
-    func load(keyring: CacheKeyring?, auth: Auth?) {
+    func load(keyring: CacheKeyring?, auth: Auth?, isTombstoned: ((String) -> Bool)? = nil) {
         guard let keyring, let k = try? keyring.registryKey() else { return }
         // A fresh key means a previous registry (if any) was sealed with a lost key: unreadable for good, so start over
         // from the signed-in account. Store files are keyed separately and aren't touched.
@@ -51,6 +51,11 @@ final class AccountsModel {
             registry.add(Account(id: legacy.homeAccountId, tenantId: Account.tenant(fromHomeAccountId: legacy.homeAccountId),
                                  username: legacy.username))
             save(cipher)
+        }
+        // TRUST-WIRING: an account wiped while the registry was sealed (inactive-account wipe at launch) leaves the list now.
+        if !unreadable, let isTombstoned {
+            let gone = registry.accounts.map(\.id).filter(isTombstoned)
+            if !gone.isEmpty { for id in gone { registry.remove(id) }; save(cipher) }
         }
         if Auth.activeAccountId == nil, let id = legacy?.homeAccountId ?? registry.defaultAccount?.id { Auth.activeAccountId = id }
         loaded = true
@@ -74,6 +79,16 @@ final class AccountsModel {
         do {
             let a = try await auth.addAccount(clientId: clientId)
             guard let id = a.homeAccountId?.identifier else { return }
+            // TRUST-WIRING: re-adding a wiped account (interactive sign-in just succeeded) clears its tombstone only on
+            // server confirmation; otherwise it isn't added back.
+            if app.trust.wipeLayout.isTombstoned(account: id), let config = Optional(AppConfig.load()),
+               let fresh = try? Auth(config: config, accountId: id) {
+                app.wireSession(fresh)
+                guard await app.confirmAccessAfterSignIn(fresh) else {
+                    errorText = "Your organisation couldn't confirm this account's access yet, so its data stays removed."
+                    return
+                }
+            }
             registry.add(Account(id: id, tenantId: Account.tenant(fromHomeAccountId: id), username: a.username ?? "",
                                  colour: AccountColour.next(after: registry.accounts.map(\.colour))))
             save()
@@ -106,6 +121,7 @@ final class AccountsModel {
             for f in AccountStoreNaming.files(id) { CacheKeyring.discardStaleCache(at: AppConfig.supportDir.appending(path: f)) }
             app.trust.keyring?.remove(account: id)
             app.auth?.removeCached(accountId: id)
+            app.trust.enforcer.forget(account: id)   // TRUST-WIRING: a removed account is no longer evaluated (or "wiped")
         }
         registry.remove(id)
         save()

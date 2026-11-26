@@ -37,9 +37,9 @@ public struct StaticManagedPreferences: ManagedPreferencesReading, @unchecked Se
 
 /// The signed tenant policy document. The signature covers the exact bytes of this JSON as fetched.
 ///
-/// Fetching is not TrustCore's job: the app downloads `trust-policy.json` and `trust-policy.json.sig` from a
-/// SharePoint/OneDrive location in the customer's own tenant through Graph with the signed-in user's delegated token
-/// (driveItem content). No vendor server is involved. The caller passes the bytes in.
+/// Delivery: see `TenantPolicySource` (managed preferences, or `trust-policy.json` + `.sig` next to config.json; keys
+/// pinned by a forced managed preference). No vendor server is involved. A Graph/SharePoint fetch from the customer's
+/// own tenant is a possible later channel, but no location is defined for it, so the app doesn't fetch anything.
 public struct SignedTenantPolicy: Codable, Sendable {
     public var keyId: String
     public var tenantId: String?
