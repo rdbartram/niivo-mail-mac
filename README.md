@@ -49,7 +49,7 @@ offline, never run against a real tenant. **Partial** = some of it exists. **Pla
 | Encrypted local cache, per-account keys, crypto-shred on sign-out | Built | See SECURITY.md |
 | BYOD vs managed device profiles, posture checks, app lock | Built | MDM managed preferences are read |
 | Signed tenant policy overlay | **Built in the engine, not yet wired** | `PolicyLoader` verifies it, but the app doesn't fetch one yet |
-| Offline grace lock / remote wipe on revocation | **Built in the engine, not yet wired** | `SessionHealth` and `Wipe` are self-tested; the app only simulates a wipe in fixture mode |
+| Offline grace lock / remote wipe on revocation | **Enforced, unverified live** | Per-account lock / wipe on Entra revocation, wipe group and offline deadline; signed tenant policy from managed prefs or a file. Self-tested, not yet run against a real revocation (SECURITY.md) |
 | Purview labels: read, banners, label floor on reply/forward | Built | |
 | Label picker, default / mandatory label, downgrade justification | Partial | The Policy SDK path is unverified live |
 | Decrypt protected (RMS / rpmsg) mail via the MIP SDK | **Built, unverified live** | Off by default; needs the separately downloaded MIP SDK |

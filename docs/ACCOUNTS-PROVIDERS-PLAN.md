@@ -26,8 +26,8 @@ Status: plan, nothing built. It extends `ACCOUNTS.md`, and only Microsoft 365 wo
   - `MIPMetadata.read` defaults to the global home tenant.
   - Add an explicit `LabelScope` (`.tenant(id)` / `.none`) with no default argument. Under `.none`, M365 mail forwarded into a Gmail account is treated as foreign, not fail-closed.
 - **Trust:**
-  - `SessionHealth` is driven only by Entra signals, and `DefaultWipeExecutor` wipes the whole device. An Entra revocation would currently wipe personal accounts as well.
-  - Make wipes per account. Add `TrustPolicy.personalDefault(for:)` with cloud AI off until the user opts in. Don't reuse `.byodDefault`: its `followLabels` exposes everything when there are no labels.
+  - `SessionHealth` is driven only by Entra signals. Wipes are now per account (`SessionEnforcer` + `AccountWipeLayout`, TrustCore/Enforcement.swift): an Entra revocation of one account wipes only that account. Done for M365; a personal provider plugs in by feeding its own signals per account.
+  - ~~Make wipes per account.~~ Add `TrustPolicy.personalDefault(for:)` with cloud AI off until the user opts in. Don't reuse `.byodDefault`: its `followLabels` exposes everything when there are no labels.
 - **MCP:** `OfficeTools/Backend.swift` builds Graph services directly. Move to one Backend per account and register only the tools that account is capable of.
 
 ## Architecture
