@@ -28,7 +28,8 @@ public struct AESGCMCipher: PayloadCipher {
 /// Cache key lives in the login Keychain, never on disk next to the database.
 /// Signing out deletes the key — which crypto-shreds the cache even if file deletion fails.
 public enum KeychainCacheKey {
-    static let service = "ai.niivo.mail.cachekey"
+    /// Public so a per-account wipe can name the legacy plain-key items it deletes (TrustCore `KeychainItemRef`).
+    public static let service = "ai.niivo.mail.cachekey"
 
     /// Set to "<TeamID>.<bundle id>" when the app is signed with keychain-access-groups: the key then lives in the
     /// data-protection keychain (no per-build ACL prompts, not readable by other apps). nil → legacy login keychain.

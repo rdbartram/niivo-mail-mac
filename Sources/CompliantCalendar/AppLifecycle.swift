@@ -222,6 +222,10 @@ final class AppLifecycle {
     private(set) var reauthError: String?
     @ObservationIgnored private var silentTriedFor: String?
 
+    /// TRUST-WIRING: the session enforcer decided "prompt" (MFA, CA, consent, interaction required) on the calendar or
+    /// mail token path: the existing "Sign-in required" state, content stays on screen.
+    func sessionNeedsInteraction() { mailTokenNeedsInteraction = true }
+
     func mailTokenSucceeded() { if mailTokenNeedsInteraction { mailTokenNeedsInteraction = false } }
 
     func mailTokenFailed(_ error: Error) {

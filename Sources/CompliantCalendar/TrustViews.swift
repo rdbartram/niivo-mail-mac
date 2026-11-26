@@ -19,7 +19,8 @@ struct TrustGateView: View {
             LinearGradient(colors: [.indigo.opacity(0.18), .pink.opacity(0.12)], startPoint: .topLeading, endPoint: .bottomTrailing)
                 .background(.background)
             VStack(spacing: 16) {
-                if case .wiped(let reason, let at) = t.wipe { wiped(reason, at) }
+                if case .wiped(let n) = t.wipe { wiped(n) }
+                else if !t.isLocked, let s = t.sessionLock { sessionLocked(s) }
                 else if t.isBlocked { blocked() }
                 else { locked() }
             }
@@ -46,16 +47,47 @@ struct TrustGateView: View {
         Button("Check Again") { Task { await t.checkPosture() } }.disabled(t.postureChecking)
     }
 
-    @ViewBuilder private func wiped(_ reason: String, _ at: Date) -> some View {
+    @ViewBuilder private func wiped(_ n: TrustModel.WipeNotice) -> some View {
+        let t = app.trust
         Image(systemName: "trash.slash.fill").font(.system(size: 52, weight: .thin)).foregroundStyle(.red)
-        Text("Your organisation removed its data from this Mac").font(.title2.weight(.semibold)).multilineTextAlignment(.center)
-        Text("Reason: \(reason) · \(at.formatted(date: .abbreviated, time: .shortened))").foregroundStyle(.secondary)
-        Text("Mail and calendar caches were deleted. Sign in again once your access is restored.")
-            .font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
-        if app.isFixtureMode {
+        Text(Self.wipeHeadline(n)).font(.title2.weight(.semibold)).multilineTextAlignment(.center)
+        Text(TrustModel.wipeReasonText(n.reason, policy: t.policy)).multilineTextAlignment(.center)
+        Text(n.at.formatted(date: .abbreviated, time: .shortened)).foregroundStyle(.secondary)
+        Text(Self.wipeDetail(n)).font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
+        if n.simulated {
             Text("Simulation: only the in-memory fixture stores were wiped.").font(.caption).foregroundStyle(.orange)
             Button("Reset Demo") { Task { await app.resetWipeSimulation() } }.buttonStyle(.borderedProminent)
+        } else {
+            HStack {
+                Button("Sign In Again") { Task { await app.continueAfterWipe(with: nil) } }.buttonStyle(.borderedProminent)
+                if let id = n.nextAccountId {
+                    Button("Continue with \(n.nextAccountTitle ?? "another account")") { Task { await app.continueAfterWipe(with: id) } }
+                }
+            }
         }
+    }
+
+    @ViewBuilder private func sessionLocked(_ code: String) -> some View {
+        let t = app.trust
+        Image(systemName: "person.badge.key.fill").font(.system(size: 52, weight: .thin)).foregroundStyle(.secondary)
+        Text("Sign in again to continue").font(.title.weight(.semibold))
+        Text(TrustModel.sessionLockText(code, policy: t.policy)).foregroundStyle(.secondary).multilineTextAlignment(.center)
+        HStack {
+            Button("Sign In Again") { Task { await app.signInAgainForSession() } }.buttonStyle(.borderedProminent)
+                .keyboardShortcut(.defaultAction)
+            Button("Try Again") { Task { await app.enforcementTick() } }
+        }
+        if let e = AppLifecycle.shared.reauthError { Text(e).font(.caption).foregroundStyle(.red) }
+    }
+
+    static func wipeHeadline(_ n: TrustModel.WipeNotice) -> String {
+        n.account.map { "Your organisation removed \($0)'s data from this Mac" } ?? "Your organisation removed its data from this Mac"
+    }
+
+    static func wipeDetail(_ n: TrustModel.WipeNotice) -> String {
+        n.nextAccountId == nil
+            ? "This account's mail and calendar caches, keys and sign-in were deleted. Sign in again once your access is restored."
+            : "This account's mail and calendar caches, keys and sign-in were deleted. Your other accounts on this Mac were not touched."
     }
 
     static func reason(_ s: AppLockState) -> String {
@@ -114,22 +146,43 @@ struct NiivoGate: View {
     private func isAlarm(_ t: TrustModel) -> Bool { t.isWiped || t.isBlocked }
     private func stateLabel(_ t: TrustModel) -> String {
         if t.isWiped { return "02 — Wiped" }
+        if !t.isLocked, t.sessionLock != nil { return "04 — Sign in again" }
         if t.isBlocked { return "03 — Blocked" }
         return "01 — Locked"
     }
 
     @ViewBuilder private func content(_ t: TrustModel) -> some View {
-        if case .wiped(let reason, let at) = t.wipe {
+        if case .wiped(let n) = t.wipe {
             VStack(alignment: .leading, spacing: 18) {
                 MonoLabel("Data removed", color: skin.danger, bracket: true)
-                headline("Your organisation removed its data from this Mac.")
-                Text("Reason: \(reason) · \(at.formatted(date: .abbreviated, time: .shortened))").font(skin.sans(15)).foregroundStyle(skin.muted)
-                Text("Mail and calendar caches were deleted. Sign in again once your access is restored.")
-                    .font(skin.sans(15)).foregroundStyle(skin.muted)
-                if app.isFixtureMode {
+                headline(TrustGateView.wipeHeadline(n) + ".")
+                Text(TrustModel.wipeReasonText(n.reason, policy: t.policy)).font(skin.sans(15)).foregroundStyle(skin.ink)
+                Text(n.at.formatted(date: .abbreviated, time: .shortened)).font(skin.sans(15)).foregroundStyle(skin.muted)
+                Text(TrustGateView.wipeDetail(n)).font(skin.sans(15)).foregroundStyle(skin.muted)
+                if n.simulated {
                     MonoLabel("Simulation: only the in-memory fixture stores were wiped.", color: .orange)
                     Button("Reset Demo") { Task { await app.resetWipeSimulation() } }.nvButton(skin, .primary, large: true)
+                } else {
+                    HStack(spacing: 14) {
+                        Button("Sign In Again") { Task { await app.continueAfterWipe(with: nil) } }.nvButton(skin, .primary, large: true)
+                        if let id = n.nextAccountId {
+                            Button("Continue with \(n.nextAccountTitle ?? "another account")") { Task { await app.continueAfterWipe(with: id) } }
+                                .nvButton(skin, .ghost, large: true)
+                        }
+                    }
                 }
+            }
+        } else if !t.isLocked, let code = t.sessionLock {
+            VStack(alignment: .leading, spacing: 18) {
+                MonoLabel("Sign-in needed", color: skin.danger, bracket: true)
+                headline("Sign in again to continue.")
+                Text(TrustModel.sessionLockText(code, policy: t.policy)).font(skin.sans(15)).foregroundStyle(skin.muted)
+                HStack(spacing: 14) {
+                    Button("Sign In Again") { Task { await app.signInAgainForSession() } }.nvButton(skin, .primary, large: true)
+                        .keyboardShortcut(.defaultAction)
+                    Button("Try Again") { Task { await app.enforcementTick() } }.nvButton(skin, .ghost, large: true)
+                }
+                if let e = AppLifecycle.shared.reauthError { MonoLabel(e, color: skin.danger) }
             }
         } else if t.isBlocked {
             VStack(alignment: .leading, spacing: 18) {

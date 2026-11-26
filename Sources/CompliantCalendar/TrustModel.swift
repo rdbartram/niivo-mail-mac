@@ -1,12 +1,23 @@
 import SwiftUI
 import AppKit
+import CalendarCore
 import TrustCore
 
 /// App-wide BYOD trust state: effective policy (managed prefs → tenant file → defaults), posture, app lock and the
 /// (fixture-only) wipe simulation. Views read this; nothing here touches mail or calendar content.
 @MainActor @Observable
 final class TrustModel {
-    enum WipeState: Equatable { case none, wiped(reason: String, at: Date) }
+    /// What the wiped screen says. `account` = the wiped account's title (live), `next` = another signed-in account the
+    /// user can continue with (its data was not touched).
+    struct WipeNotice: Equatable {
+        var reason: String
+        var at: Date
+        var account: String? = nil
+        var simulated = false
+        var nextAccountId: String? = nil
+        var nextAccountTitle: String? = nil
+    }
+    enum WipeState: Equatable { case none, wiped(WipeNotice) }
 
     private(set) var loaded: LoadedPolicy?
     var policy: TrustPolicy { loaded?.policy ?? .byodDefault }
@@ -20,6 +31,22 @@ final class TrustModel {
     private(set) var unlockFailed = false
     private(set) var wipe: WipeState = .none
     private(set) var started = false
+    /// TRUST-WIRING: the active account's session is locked by the enforcer (grant revoked, unconfirmed revocation,
+    /// offline grace exceeded, tombstone awaiting sign-in). Content hidden until a fresh token clears it.
+    var sessionLock: String?
+
+    /// Trust state on disk (grace clocks, strikes, policy anti-rollback), outside every wiped location.
+    static var trustDir: URL { AppConfig.supportDir.appending(path: "trust", directoryHint: .isDirectory) }
+    /// Per-account session state; replaced in `start` with the file-backed store (fixtures keep it in memory).
+    private(set) var enforcer = SessionEnforcer(store: InMemoryTrustStore())
+    private var stateStore: TrustStateStore = InMemoryTrustStore()
+    let wipeLayout = AccountWipeLayout(supportDirectory: AppConfig.supportDir,
+                                       tombstoneDirectory: TrustModel.trustDir.appending(path: "tombstones", directoryHint: .isDirectory))
+    /// Where the signed tenant policy came from ("managedPreferences", "file", "none").
+    private(set) var policyOrigin = "none"
+    /// Called every 60 s (AppModel: grace, wipe-group cadence, revocation second strike).
+    var onEnforcementTick: (() async -> Void)?
+    private var enforcementTimer: Timer?
 
     private var lock: AppLock?
     /// Live mode only: the SE-backed cache keys. Set by AppModel once an account is known.
@@ -36,7 +63,7 @@ final class TrustModel {
     var isBlocked: Bool { if case .block = postureDecision { true } else { false } }
     /// Content must not be on screen: locked or wiped. Posture `.block` is shown as a banner in this pass (so a
     /// failing probe on a dev Mac can't take the calendar down); enforcing it as a gate is a one-line change here.
-    var hidesContent: Bool { isLocked || isWiped }
+    var hidesContent: Bool { isLocked || isWiped || sessionLock != nil }
 
     /// Screen capture is a TrustPolicy control on top of per-label rules.
     var blocksScreenCapture: Bool { !effectivePolicy.allowScreenCapture }
@@ -50,6 +77,12 @@ final class TrustModel {
     func start(fixtures: Bool) {
         guard !started else { return }
         started = true
+        if !fixtures {
+            // Fail closed: a store that can't be created stays in memory, so no recorded refresh → locked until one.
+            stateStore = (try? FileTrustStore(directory: Self.trustDir.appending(path: "state", directoryHint: .isDirectory)))
+                ?? InMemoryTrustStore()
+            enforcer = SessionEnforcer(store: stateStore)
+        }
         reloadPolicy()
         var lockPolicy = policy.appLock
         // Fixture demo aid only (synthetic data): skip the launch lock for screenshots/automation.
@@ -74,10 +107,11 @@ final class TrustModel {
     }
 
     func reloadPolicy() {
-        // No tenant-hosted policy file yet: managed preferences (if any MDM pushes them) over built-in defaults.
-        let loader = PolicyLoader(prefs: CFManagedPreferences(bundleId: AppConfig.bundleId),
-                                  pinnedKeys: PinnedPolicyKeys(keys: [:]))
-        let new = loader.load(tenantJSON: nil, tenantSignature: nil)
+        // TRUST-WIRING: managed preferences + the signed tenant document (managed prefs, or trust-policy.json + .sig next
+        // to config.json), keys pinned only by a forced managed preference. The document can only tighten.
+        let (new, origin) = TenantPolicySource.load(prefs: CFManagedPreferences(bundleId: AppConfig.bundleId),
+                                                    directory: AppConfig.supportDir, store: stateStore)
+        policyOrigin = origin
         let changed = loaded.map { $0.policy != new.policy } ?? false
         loaded = new
         lastRefresh = .now
@@ -103,7 +137,7 @@ final class TrustModel {
     /// Keys for opening a file-backed store. Locked → false (open after unlock). Unlocked but keys not yet unwrapped (app
     /// lock disabled by policy, or the keyring arrived after the unlock) → one prompt of its own.
     func ensureKeys() async -> Bool {
-        guard !isLocked, let keyring else { return false }
+        guard !hidesContent, let keyring else { return false }
         return await keyring.unlock(with: nil)
     }
 
@@ -128,7 +162,28 @@ final class TrustModel {
         timer = Timer.scheduledTimer(withTimeInterval: 20, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.lock?.tick() }
         }
+        enforcementTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { guard let self else { return }; Task { await self.onEnforcementTick?() } }
+        }
     }
+
+    // MARK: Live wipe (TRUST-WIRING)
+
+    /// The executor for ONE account: its calendar + mail stores (+ sidecars), its vault slots, its legacy plain-key
+    /// Keychain items, its MSAL account (`extra`) and the shared MIP licence cache (re-fetchable; may hold its
+    /// licences). Other accounts' files, slots, the vault key and the account registry are untouched.
+    func accountWipeExecutor(_ id: String, extra: [CryptoShredding]) throws -> DefaultWipeExecutor {
+        try wipeLayout.executor(
+            account: id, storeFileNames: AccountStoreNaming.files(id),
+            cacheDirectories: [AppConfig.supportDir.appending(path: "mip", directoryHint: .isDirectory)],
+            keychainItems: [id, id + ".mail"].map {
+                KeychainItemRef(service: KeychainCacheKey.service, account: $0, accessGroup: KeychainCacheKey.accessGroup)
+            },
+            vault: keyring?.vault, extraShredders: extra)
+    }
+
+    func showWipe(_ n: WipeNotice) { sessionLock = nil; wipe = .wiped(n) }
+    func dismissWipeNotice() { wipe = .none }
 
     // MARK: Remote wipe (simulation, fixtures only)
 
@@ -139,7 +194,7 @@ final class TrustModel {
                                             grace: .ok(offlineSeconds: 0), posture: postureDecision, tombstoned: executor.tombstone != nil)
         guard case .wipe(let reason) = decision else { return }
         _ = try? executor.wipe(reason: reason)
-        wipe = .wiped(reason: reason, at: executor.tombstone?.wipedAt ?? .now)
+        wipe = .wiped(WipeNotice(reason: reason, at: executor.tombstone?.wipedAt ?? .now, simulated: true))
     }
 
     func resetWipeSimulation(executor: InMemoryWipeExecutor) {

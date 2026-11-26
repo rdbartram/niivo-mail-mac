@@ -251,6 +251,7 @@ final class AppModel {
             let config = AppConfig.load()
             guard let keyring = trust.keyring, await trust.ensureKeys() else { return }
             let account = auth.accountKey
+            guard !trust.wipeLayout.isTombstoned(account: account) else { return }   // TRUST-WIRING
             // Before startLive: it awaits the first full sync pass, and the sidebar needs these meanwhile.
             await mail.configureLiveExtras(auth: auth)   // MAILBOXES-HOOK / GROUPS-HOOK (MailboxManager.swift)
             await mail.startLive(compliance: compliance, token: { try await auth.mailToken() }, account: account,
@@ -290,6 +291,30 @@ final class AppModel {
         calendarReady = true
         if section == .mail || AppLifecycle.shared.startsMailInBackground { await startMailIfNeeded() }   // LIFECYCLE-HOOK
     }
+    // TRUST-WIRING state (TrustWiring.swift).
+    @ObservationIgnored var sessionClientId = ""
+    @ObservationIgnored var lastEnforced: Date?
+    @ObservationIgnored var lastInactiveProbe: Date?
+    @ObservationIgnored var enforcementTickInFlight = false
+    @ObservationIgnored var wipingAccounts: Set<String> = []
+
+    /// Per-account wipe of the active account: close the live session like a lock, drop everything rendered.
+    func tearDownSessionForWipe() {
+        suspendForLock()
+        resetProtectedContent(); protectedContent = nil
+        mail.signOut()   // in-memory state; the store file itself is deleted by the executor
+        sync = nil; store = nil; service = nil; calendarReady = false
+        calendars = []; weekEvents = []; searchResults = []; selectedEventId = nil
+        showEditor = false; removal = nil
+        compliance.update(labels: [], synced: false)
+        PurviewPolicy.shared.reset()
+    }
+
+    /// After the executor ran: the account is gone from MSAL, so the window shows the wiped notice, then sign-in.
+    func finishWipedSession() {
+        mode = .needsSignIn
+    }
+
     private(set) var store: LocalStore?   // read by the invite card's conflict check (ReaderActions2.swift)
     private var sync: SyncEngine?
     private var fixtures: FixtureCalendarService?
@@ -321,6 +346,7 @@ final class AppModel {
         trust.onLocked = { [weak self] in self?.suspendForLock() }
         mail.ai.app = self   // AI-HOOK
         trust.onUnlocked = { [weak self] in await self?.resumeAfterUnlock() }
+        trust.onEnforcementTick = { [weak self] in await self?.enforcementTick() }   // TRUST-WIRING
         // Unconfigured (release, no client ID): nothing to protect yet, so no vault and no Keychain either.
         trust.start(fixtures: useFixtures || !config.isConfigured)
         // DEV ONLY: a Graph token obtained outside the app (scripts/devtoken.py, device-code flow). Lets us test
@@ -351,8 +377,22 @@ final class AppModel {
             do {
                 let auth = try Auth(config: config)
                 self.auth = auth
-                if auth.account == nil { mode = .needsSignIn; return }
+                // TRUST-WIRING: before any store opens. Interrupted wipes finish; the active account refreshes once
+                // (bounded) so its grace clock is current; then its decision runs (lock / wipe / prompt).
+                sessionClientId = config.clientId ?? ""
+                wireSession(auth)
+                if trust.keyring == nil { trust.keyring = CacheKeyring.system() }  // after Auth set KeychainCacheKey.accessGroup
+                resumePendingWipes()
+                guard let active = auth.account?.homeAccountId?.identifier else {
+                    mode = .needsSignIn
+                    Task { await self.probeInactiveAccounts() }
+                    return
+                }
+                await probe(auth)
+                enforce(account: active)
+                guard auth.account != nil, !trust.isWiped else { return }   // wiped at launch: notice, then sign-in
                 await goLive(auth: auth, config: config)
+                Task { await self.probeInactiveAccounts() }
             } catch { lastError = "MSAL: \(error.localizedDescription)"; mode = .unconfigured }
         }
         await syncNow()
@@ -377,6 +417,15 @@ final class AppModel {
         defer { signingIn = false }
         do {
             try await auth.signIn()
+            // TRUST-WIRING: a wiped account comes back only once the server confirms it isn't revoked.
+            sessionClientId = AppConfig.load().clientId ?? ""
+            wireSession(auth)
+            trust.dismissWipeNotice()
+            guard await confirmAccessAfterSignIn(auth) else {
+                lastError = "Your organisation couldn't confirm your access yet, so this account's data stays removed. Try again later."
+                auth.signOut()
+                return
+            }
             await goLive(auth: auth, config: AppConfig.load())
             await syncNow()
             calendarReady = store != nil
@@ -384,6 +433,9 @@ final class AppModel {
         } catch {
             let ns = error as NSError
             if ns.domain == "MSALErrorDomain", ns.code == -50005 { return }   // MSALErrorUserCanceled: closed the sheet
+            // TRUST-WIRING: an interactive failure for an account MSAL can name is authoritative (disabled / deleted /
+            // unassigned on a tenant + client seen before → that account's data is wiped; 50173 only locks).
+            recordInteractiveSignInFailure(error)
             let text = ([ns.localizedDescription] + ns.userInfo.values.compactMap { $0 as? String }).joined(separator: " ")
             signInError = AccountAuthError.classify(text, tenant: AppConfig.load().tenantId,
                                                     clientId: AppConfig.load().clientId ?? "")
@@ -415,19 +467,21 @@ final class AppModel {
         openingLive = true
         defer { openingLive = false }
         guard await trust.ensureKeys(), !trust.isLocked else { return }
+        guard !trust.wipeLayout.isTombstoned(account: auth.accountKey) else { return }   // TRUST-WIRING: wiped, awaiting sign-in
         do {
             let (key, fresh) = try keyring.calendarKey(account: auth.accountKey)
             let url = AppConfig.supportDir.appending(path: "\(CacheKeyring.safeName(auth.accountKey)).sqlite")
             if fresh { CacheKeyring.discardStaleCache(at: url) }  // sealed with a lost key: unreadable, resync
             open(service: service, key: key, url: url)
-            accounts.load(keyring: keyring, auth: auth)   // ACCOUNTS-HOOK: registry needs the unlocked keyring
+            let layout = trust.wipeLayout
+            accounts.load(keyring: keyring, auth: auth, isTombstoned: { layout.isTombstoned(account: $0) })   // ACCOUNTS-HOOK: registry needs the unlocked keyring
         } catch { lastError = "Cache key: \(error)" }
     }
 
     /// Lock (live): drop the stores, and with them the ciphers holding the keys, plus everything rendered from them.
     /// Fixtures keep their in-memory stores (ephemeral keys, synthetic data) so the demo continues after unlock; the
     /// lock screen hides the content.
-    private func suspendForLock() {
+    func suspendForLock() {
         AttachmentPreviewStore.shared.clear()   // PREVIEW-HOOK: preview bytes + scratch files, fixtures too
         guard mode == .live else { return }
         resetProtectedContent()   // decrypted bodies + licence rights don't survive a lock
@@ -437,8 +491,10 @@ final class AppModel {
         mail.suspendForLock()
     }
 
-    private func resumeAfterUnlock() async {
-        guard mode == .live, store == nil else { return }
+    func resumeAfterUnlock() async {
+        // TRUST-WIRING: grace may have run out while locked; a lock / wipe decided here keeps the stores closed.
+        if mode == .live, let a = auth?.account?.homeAccountId?.identifier { enforce(account: a) }
+        guard mode == .live, store == nil, !trust.hidesContent else { return }
         await openLiveStore()
         guard store != nil else { return }
         // Usable straight away from the encrypted cache: `open` already painted it. Sync and mail start in the
@@ -499,6 +555,12 @@ final class AppModel {
             let next = try Auth(config: config, accountId: id)
             guard next.account != nil else { mode = .needsSignIn; auth = next; return }
             auth = next
+            sessionClientId = config.clientId ?? ""   // TRUST-WIRING
+            wireSession(next)
+            trust.sessionLock = nil   // the previous account's lock doesn't follow the switch
+            await probe(next)
+            enforce(account: id)
+            guard next.account != nil, !trust.isWiped else { return }
             await goLive(auth: next, config: config)
             await syncNow()
             calendarReady = store != nil
