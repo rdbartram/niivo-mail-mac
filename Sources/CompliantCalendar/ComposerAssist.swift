@@ -90,6 +90,10 @@ struct RecipientField: View {
     @Environment(AppModel.self) private var app
     var field: RecipientFieldKind
     var composer: ComposerState
+    /// Put the cursor here when the composer opens with this field empty (new message, forward). A reply has its
+    /// recipients filled in, so it keeps the body. `ComposeFocus.initial` decides; this only applies it.
+    var autofocus = false
+    @FocusState private var inputFocused: Bool
 
     var body: some View {
         let hub = ComposeHub.shared
@@ -131,6 +135,13 @@ struct RecipientField: View {
         TextField(composer[keyPath: field.tokens].isEmpty ? "Name or address" : "", text: Binding(
             get: { composer[keyPath: field.text] }, set: { composer[keyPath: field.text] = $0 }))
             .textFieldStyle(.plain).frame(minWidth: 180)
+            .focused($inputFocused)
+            .task(id: ObjectIdentifier(composer)) {
+                guard autofocus, ComposeFocus.initial(to: composer.to.count, toText: composer.toText) == .to else { return }
+                // One runloop turn so the window is key and the field is in the responder chain.
+                try? await Task.sleep(for: .milliseconds(120))
+                inputFocused = true
+            }
             .onSubmit { commit() }
             .onChange(of: composer[keyPath: field.text]) { _, t in
                 // Typed separators or a pasted list ("a@x.ch; b@y.ch", one per line, space-separated) become tokens.

@@ -164,7 +164,7 @@ struct ComposerCompactHeader: View {
                                           pendingText: !c.ccText.isEmpty || !c.bccText.isEmpty)
         HStack(alignment: .top, spacing: 8) {
             VStack(alignment: .leading, spacing: 4) {
-                RecipientField(field: .to, composer: c)   // COMPOSE-HOOK (ComposerAssist.swift)
+                RecipientField(field: .to, composer: c, autofocus: true)   // COMPOSE-HOOK (ComposerAssist.swift)
                 if cc {
                     RecipientField(field: .cc, composer: c)
                     RecipientField(field: .bcc, composer: c)
