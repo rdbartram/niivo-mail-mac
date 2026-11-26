@@ -187,10 +187,11 @@ final class OnboardingModel {
 
     func next(_ app: AppModel) {
         if flow.step == .ai, !applyAI(app.mail.ai) { return }
+        let last = flow.isLast   // a re-run is already finished: close only after the last step
         flow.complete(); persist()
-        if flow.progress.isFinished { close() }
+        if last { close() }
     }
-    func skip() { flow.skip(); persist(); if flow.progress.isFinished { close() } }
+    func skip() { let last = flow.isLast; flow.skip(); persist(); if last { close() } }
     func back() { flow.back() }
     /// "Skip setup", Esc, or closing: finished for this account (it doesn't come back on its own).
     func finish() { flow.finish(); persist(); close() }
@@ -218,7 +219,7 @@ final class OnboardingModel {
 
     func probe() {
         probeTask?.cancel()
-        if let r = LocalModelServer.refusal(baseURL: serverURL) { probeStatus = r; return }
+        if let r = Self.serverRefusal(serverURL) { probeStatus = r; return }
         guard let list = LocalModelServer.modelsURL(baseURL: serverURL) else { probeStatus = "Not a valid URL"; return }
         let tags = LocalModelServer.ollamaTagsURL(baseURL: serverURL)
         probing = true; models = []; modelPick = nil
@@ -260,8 +261,14 @@ final class OnboardingModel {
         return nil
     }
 
+    /// This step is about servers on this Mac: loopback only (a remote endpoint is configured in Settings → AI).
+    static func serverRefusal(_ url: String) -> String? {
+        LocalModelServer.refusal(baseURL: url)
+            ?? (LocalModelServer.isLoopback(baseURL: url) ? nil : "A local server runs on this Mac: use http://localhost… (remote endpoints go in Settings → AI)")
+    }
+
     func useLocal(_ ai: AIAssistModel) {
-        guard let m = modelPick, localRefusal(ai) == nil, LocalModelServer.refusal(baseURL: serverURL) == nil else { return }
+        guard let m = modelPick, localRefusal(ai) == nil, Self.serverRefusal(serverURL) == nil else { return }
         var s = ai.settings
         s.openAI = OpenAIConfig(flavor: .local, baseURL: serverURL.trimmingCharacters(in: .whitespacesAndNewlines), model: m)
         s.choice = .openAICompatible

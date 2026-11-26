@@ -54,9 +54,11 @@ struct OnboardingSheet: View {
     }
 
     private func footer(_ o: OnboardingModel) -> some View {
-        HStack(spacing: 10) {
+        // While a signature is being edited, Return / Esc belong to the editor ("Save Signature"), not the sheet.
+        let keys = !(o.flow.step == .signatures && SignatureEditorModel.shared.editingId != nil)
+        return HStack(spacing: 10) {
             if o.flow.step != .done {
-                NButton("Skip setup", kind: .quiet) { o.finish() }.keyboardShortcut(.cancelAction)
+                NButton("Skip setup", kind: .quiet) { o.finish() }.keyboardShortcut(keys ? .cancelAction : nil)
                     .help("Close setup (Esc). Run it again any time from Settings → AI.")
             }
             Spacer()
@@ -65,7 +67,7 @@ struct OnboardingSheet: View {
                 NButton("Skip", kind: .ghost) { o.skip() }.keyboardShortcut("]", modifiers: .command)
             }
             NButton(o.flow.step == .done ? "Start using niivo" : o.flow.step == .welcome ? "Get started" : "Continue") { o.next(app) }
-                .keyboardShortcut(.defaultAction)
+                .keyboardShortcut(keys ? .defaultAction : nil)
         }
         .padding(.horizontal, 28).padding(.vertical, 14)
         .hairline(skin, edge: .top)
@@ -297,6 +299,10 @@ struct OnboardingLocalModelsStep: View {
                 HStack {
                     NButton("Use this model") { o.useLocal(ai) }.disabled(refusal != nil || o.modelPick == nil)
                     if let r = refusal { Text(r).font(skin.sans(NV.Size.bodySm, .medium)).foregroundStyle(skin.danger) }
+                }
+                if refusal == nil, ai.settings.choice != .openAICompatible {
+                    Text("This replaces your AI choice: AI turns on with this server as its provider, gated like cloud AI.")
+                        .font(skin.sans(NV.Size.bodySm, .medium)).foregroundStyle(skin.ink).fixedSize(horizontal: false, vertical: true)
                 }
             }
             Text("niivo only asks the server which models it has, when you click Detect. Install models with the server itself (for example `ollama pull llama3.2`). A local server runs on this Mac, but niivo gates it like a cloud provider: your organisation's cloud AI policy and the cloud label rules apply.")
