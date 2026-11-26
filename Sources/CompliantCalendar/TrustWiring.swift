@@ -30,6 +30,11 @@ extension AuthFailure {
             }
         }
         if ns.domain == MSALErrorDomain, ns.code == -50002, oauthError == nil { oauthError = "interaction_required" }
+        // MSAL replayed a cached server error (throttling cache) instead of asking Entra again: not an independent
+        // signal, so it can't be a second revocation strike. Treated as transient.
+        if (info[MSALThrottlingCacheHitKey] as? NSNumber)?.boolValue == true || (info[MSALThrottlingCacheHitKey] as? Bool) == true {
+            aadstsCodes = []; oauthError = nil; subError = nil; httpStatus = nil; isNetworkError = true
+        }
     }
 
     /// The user closed the sign-in sheet (MSALErrorUserCanceled): not a session signal.
@@ -168,14 +173,18 @@ extension AppModel {
 
     // MARK: Wipe group
 
-    /// `POST /me/checkMemberGroups` with the group-read token (GroupMember.Read.All, admin consent). Any failure is "no
-    /// decision" (never a wipe, never a session signal). Returns the ids Graph returned.
+    /// Only what checkMemberGroups needs (delegated GroupMember.Read.All, admin consent), so a tenant that hasn't
+    /// consented the Groups section's conversation scope still gets its wipe-group check.
+    static let wipeGroupScopes = ["https://graph.microsoft.com/GroupMember.Read.All"]
+
+    /// `POST /me/checkMemberGroups`. Any failure is "no decision" (never a wipe, never a session signal), logged.
+    /// Returns the ids Graph returned.
     @discardableResult
     func checkWipeGroup(_ auth: Auth) async -> [String]? {
         guard let gid = trust.policy.wipeGroupId, !gid.isEmpty, let a = auth.account?.homeAccountId?.identifier else { return nil }
         var returned: [String]?
         do {
-            let tok = try await auth.groupToken(write: false)
+            let tok = try await auth.silentToken(scopes: Self.wipeGroupScopes)
             var req = URLRequest(url: URL(string: "https://graph.microsoft.com/v1.0/me/checkMemberGroups")!)
             req.httpMethod = "POST"
             req.setValue("Bearer \(tok)", forHTTPHeaderField: "Authorization")
@@ -184,6 +193,9 @@ extension AppModel {
             let (d, r) = try await URLSession.shared.data(for: req)
             if (r as? HTTPURLResponse)?.statusCode == 200 { returned = WipeGroupCheck.memberGroupIds(fromResponse: d) }
         } catch { returned = nil }
+        if returned == nil {
+            FileHandle.standardError.write(Data("[Trust] wipe-group check failed (no decision; needs GroupMember.Read.All consent?)\n".utf8))
+        }
         trust.enforcer.recordWipeGroupCheck(account: a, returned: returned)
         return returned
     }

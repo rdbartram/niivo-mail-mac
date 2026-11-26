@@ -493,7 +493,9 @@ final class AppModel {
 
     func resumeAfterUnlock() async {
         // TRUST-WIRING: grace may have run out while locked; a lock / wipe decided here keeps the stores closed.
-        if mode == .live, let a = auth?.account?.homeAccountId?.identifier { enforce(account: a) }
+        // A bounded refresh first (as at launch), so an absence longer than the grace period doesn't lock a user who is
+        // online and simply was away.
+        if mode == .live, let auth, let a = auth.account?.homeAccountId?.identifier { await probe(auth); enforce(account: a) }
         guard mode == .live, store == nil, !trust.hidesContent else { return }
         await openLiveStore()
         guard store != nil else { return }
@@ -532,6 +534,7 @@ final class AppModel {
         mail.signOut()
         // Crypto-shred: the wrapped keys go (and any legacy plain keys), so a lingering file stays unreadable.
         trust.keyring?.remove(account: key)
+        trust.enforcer.forget(account: key)   // TRUST-WIRING: signed out, no longer evaluated
         sync = nil; store = nil
         auth.signOut()
         calendars = []; weekEvents = []; mode = .needsSignIn

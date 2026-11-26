@@ -79,8 +79,16 @@ func runTrustEnforcementTests() async {
         check(e.recordFailure(fail([50133]), path: .interactive, account: "A", tenantId: tenant, clientId: client) == .reauth(.grantRevoked)
               && e.evaluate(account: "A", policy: .byodDefault, tombstoned: false).action == .lock("reauth:grantRevoked"),
               "AADSTS50133 locks too")
+        _ = e.recordFailure(fail([], oauth: "interaction_required"), path: .silentRefresh, account: "A", tenantId: tenant, clientId: client)
+        check(e.evaluate(account: "A", policy: .byodDefault, tombstoned: false).action == .lock("reauth:grantRevoked"),
+              "50173 then a plain interaction_required: still locked (never downgraded to a prompt)")
         e.recordSuccess(account: "A", tenantId: tenant, clientId: client)
         check(e.evaluate(account: "A", policy: .byodDefault, tombstoned: false).action == .none, "a fresh token clears the lock")
+        _ = e.recordFailure(fail([50057]), path: .silentRefresh, account: "A", tenantId: tenant, clientId: client)
+        _ = e.recordFailure(fail([50076]), path: .silentRefresh, account: "A", tenantId: tenant, clientId: client)
+        check(e.evaluate(account: "A", policy: .byodDefault, tombstoned: false).action == .lock("reauth:revocationUnconfirmed"),
+              "first revocation strike then MFA required: still locked")
+        e.recordSuccess(account: "A", tenantId: tenant, clientId: client)
         // Silent path: first strike locks, second ≥ 60 s later wipes A only.
         _ = e.recordFailure(fail([50057]), path: .silentRefresh, account: "A", tenantId: tenant, clientId: client)
         check(e.evaluate(account: "A", policy: .byodDefault, tombstoned: false).action == .lock("reauth:revocationUnconfirmed"),

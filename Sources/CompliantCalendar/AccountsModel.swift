@@ -121,6 +121,7 @@ final class AccountsModel {
             for f in AccountStoreNaming.files(id) { CacheKeyring.discardStaleCache(at: AppConfig.supportDir.appending(path: f)) }
             app.trust.keyring?.remove(account: id)
             app.auth?.removeCached(accountId: id)
+            app.trust.enforcer.forget(account: id)   // TRUST-WIRING: a removed account is no longer evaluated (or "wiped")
         }
         registry.remove(id)
         save()

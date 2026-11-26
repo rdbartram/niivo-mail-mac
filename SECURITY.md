@@ -232,7 +232,12 @@ The rules:
 - **Misconfiguration guard.** Codes that also fit a wrong tenant or client ID (50034, 500341, 700016, 50105) only
   count as revoked for a tenant and client that have signed in successfully before.
 - **Two strikes on silent refresh.** A revoked result on the background refresh path has to repeat at least 60 s
-  later before it counts. An interactive result is authoritative straight away.
+  later before it counts. An interactive result is authoritative straight away. A result MSAL replays from its
+  throttling cache is treated as transient (not an independent strike). Unverified: if MSAL drops the refresh token
+  after the first `invalid_grant`, the second silent call can't carry the code; the session then stays locked and
+  only an interactive sign-in decides.
+- **Locks are sticky.** Once locked (50173/50133 or a first strike), a later, milder failure such as "interaction
+  required" doesn't turn the lock back into a prompt; only a successful token clears it.
 - **Wipe group (optional).** Membership of an Entra group, checked with `checkMemberGroups` every
   `wipeGroupCheckMinutes` (default 60, minimum 5; a policy can only shorten it), means wipe. It needs the
   admin-consented `GroupMember.Read.All`. A failed check never wipes and isn't counted as a check.

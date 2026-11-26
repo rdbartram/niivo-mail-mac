@@ -112,13 +112,28 @@ public final class SessionEnforcer: @unchecked Sendable {
     }
 
     /// Classifies a token failure through `RevocationGuard` (per account: guard, two strikes). A transient failure
-    /// keeps the previous error; anything else replaces it.
+    /// keeps the previous error. A non-transient one replaces it only if it is at least as severe (revoked > locking
+    /// reauth > prompting reauth): a lock (50173, first strike) is never downgraded to a prompt by a later
+    /// "interaction required"; only a success clears it.
     @discardableResult
     public func recordFailure(_ f: AuthFailure, path: AuthPath, account: String, tenantId: String, clientId: String) -> SessionErrorClass {
         let c = RevocationGuard(store: accountStore(account), now: now, minimumInterval: minimumInterval)
             .evaluate(f, path: path, tenantId: tenantId, clientId: clientId)
-        if c != .transient { lock.withLock { lastError[account] = c; lastRecorded[account] = nil } }
+        if c != .transient {
+            lock.withLock {
+                if Self.severity(c) >= Self.severity(lastError[account]) { lastError[account] = c }
+                lastRecorded[account] = nil
+            }
+        }
         return c
+    }
+
+    static func severity(_ c: SessionErrorClass?) -> Int {
+        switch c {
+        case nil, .transient?: 0
+        case .reauth(let r)?: TrustEnforcement.lockingReauth.contains(r.rawValue) ? 2 : 1
+        case .revoked?: 3
+        }
     }
 
     public func lastError(account: String) -> SessionErrorClass? { lock.withLock { lastError[account] } }
