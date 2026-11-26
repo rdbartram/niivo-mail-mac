@@ -37,8 +37,16 @@ final class VoiceLearnModel {
     @ObservationIgnored private var excerpts: [MailMessage] = []
     @ObservationIgnored private var excerptMailbox = "me"
 
+    /// ONBOARDING: Me learnt from sent mail in Suggest mode, awaiting Save / Discard (memory only), and its status line.
+    var meProposal: String?
+    var meStatus: String?
+    var learningMe = false
+    /// Bumped when the "Learn my voice" modes change (they live in UserDefaults, see OnboardingViews.swift).
+    var modesRevision = 0
+
     func reset() {
         suggestion = nil; nudge = nil; toastNudge = nil; review = []; baselines = [:]; prepared = nil; excerpts = []
+        meProposal = nil; meStatus = nil   // ONBOARDING
     }
 
     // MARK: Gate (independent of whether AI is on: on-device facts only need the label gate)
@@ -67,6 +75,8 @@ final class VoiceLearnModel {
         guard prepared != a else { return }
         prepared = a; suggestion = nil; nudge = nil; excerpts = []
         guard let store = mail.store, let gate = gate(mail) else { why("no store/gate (locked, hidden or not started)"); return }
+        let modes = self.modes   // ONBOARDING: "Learn my voice", Off stops before any mail is read
+        guard modes.contacts != .off || modes.organisation != .off else { why("learning off for contacts and company"); return }
         let mb = c.original.flatMap { store.mailbox(forFolder: $0.folderId) } ?? "me"
         let profile = mail.voiceProfile
         var nlog = log(mail)
@@ -75,7 +85,7 @@ final class VoiceLearnModel {
         let entry = PeopleHub.shared.people.first { $0.address?.lowercased() == a }
         let dir = entry.map { VoiceDirectoryFacts(title: $0.jobTitle, department: $0.department, company: $0.company) }
         let name = who.name.isEmpty ? a : who.name
-        if let layer = profile.contact(address: a) {
+        if modes.contacts != .off, let layer = profile.contact(address: a) {
             // Stale layer: subtle "Review voice" in the Voice menu (never a popup).
             let since = layer.updated.map { u in (cand.received + cand.sent).filter { $0.received > u && !$0.isPrivate }.count } ?? 0
             if VoiceNudges.needsReview(updated: layer.updated, mailsSince: since, now: .now) { review.insert(a) } else { review.remove(a) }
@@ -86,11 +96,13 @@ final class VoiceLearnModel {
                                      received: thread, sent: [], mailbox: mb, gate: gate, textLimit: 4)
             nudge = VoiceNudges.mismatch(layer: layer, observedFormality: f.formality, observedLanguage: f.language,
                                          name: layer.title, log: &nlog, now: .now)
+            if let n = nudge, modes.contacts == .automatic { save(nlog, mail); nudge = nil; applyNow(n, mail: mail); return }
             if nudge != nil { why("mismatch nudge"); save(nlog, mail); return }
         }
         let orgKey = MailDomains.companyKey(for: a)
-        let wantContact = profile.contact(address: a) == nil && !nlog.dismissed.contains("contact:" + a)
-        let wantOrg = orgKey.map { profile.org(key: $0) == nil && !nlog.dismissed.contains("org:" + $0) } ?? false
+        let wantContact = modes.contacts != .off && profile.contact(address: a) == nil && !nlog.dismissed.contains("contact:" + a)
+        let wantOrg = modes.organisation != .off
+            && (orgKey.map { profile.org(key: $0) == nil && !nlog.dismissed.contains("org:" + $0) } ?? false)
         guard wantContact || wantOrg else { why("already has voice or dismissed"); return }
         let facts = VoiceLearn.facts(address: a, displayName: who.name, directory: dir, internalDomains: mail.settings.internalDomains,
                                      received: cand.received, sent: cand.sent, mailbox: mb, gate: gate)
@@ -100,6 +112,17 @@ final class VoiceLearnModel {
             s.org = VoiceLearn.suggestedOrg(key: k, displayName: MailDomains.orgName(fromDisplayName: who.name), contacts: [facts])
         }
         guard s.contact != nil || s.org != nil else { why("no facts (received=\(cand.received.count) sent=\(cand.sent.count) dir=\(dir != nil))"); return }
+        // ONBOARDING: Automatic layers are saved now (with a toast); Suggest layers stay in the card for approval.
+        var p = profile, queue: [VoiceLearnCandidate] = []
+        if let k = s.contact { modes.offer(.contact(k), profile: &p, queue: &queue) }
+        if let o = s.org { modes.offer(.organisation(o), profile: &p, queue: &queue) }
+        if p != profile {
+            mail.saveVoice(p)
+            mail.toast(MailToast(text: "Voice learnt for \(name) (automatic). Edit it under Settings → AI → Voice.", symbol: "person.wave.2"))
+        }
+        s.contact = queue.lazy.compactMap { if case .contact(let k) = $0 { k } else { nil } }.first
+        s.org = queue.lazy.compactMap { if case .organisation(let o) = $0 { o } else { nil } }.first
+        guard s.contact != nil || s.org != nil else { why("saved automatically"); return }
         why("suggestion contact=\(s.contact != nil) org=\(s.org != nil)")
         suggestion = s
         excerpts = (cand.received + cand.sent).filter { !$0.isPrivate }.sorted { $0.received > $1.received }.prefix(8).map { $0 }
@@ -212,15 +235,34 @@ final class VoiceLearnModel {
     /// After `queueSend` succeeded, once per composer: compare locally, record kinds, maybe one toast.
     func sent(_ c: ComposerState, mail: MailModel) {
         guard let b = baselines.removeValue(forKey: c.id) else { return }
+        let modes = self.modes   // ONBOARDING: no nudge (and no edit log) when Me and Contacts are both off
+        guard modes.me != .off || modes.contacts != .off else { return }
         let edit = VoiceEditDiff.compare(draft: b.text, sent: VoiceEditDiff.normalise(c.body, signaturePlain: c.editor.signaturePlain))
         guard !edit.kinds.isEmpty else { return }
         var l = log(mail)
         let name = mail.voiceProfile.contact(address: b.address)?.title ?? b.name.split(separator: " ").first.map(String.init) ?? b.name
-        let n = VoiceNudges.afterSend(edit, contact: b.address, name: name, log: &l, now: .now)
+        let n = VoiceNudges.afterSend(edit, contact: b.address, name: name, log: &l, now: .now,
+                                      allowMe: modes.me != .off, allowContact: modes.contacts != .off)
         save(l, mail)
         guard let n else { return }
+        if modes[n.target == .me ? .me : .contacts] == .automatic { applyNow(n, mail: mail); return }
         toastNudge = n
         mail.toast(MailToast(text: n.text, symbol: "person.wave.2", action: .voiceNudge))
+    }
+
+    /// ONBOARDING: Automatic mode applies a nudge straight away (visible toast; the layer stays editable).
+    func applyNow(_ n: VoiceNudge, mail: MailModel) {
+        var p = mail.voiceProfile
+        switch n.target {
+        case .me: p.me = n.applied(toMe: p.me)
+        case .contact(let a, let name):
+            var k = n.applied(to: p.contact(address: a) ?? VoiceContact(address: a, displayName: name, notes: ""))
+            k.updated = .now
+            p.upsert(k)
+        }
+        mail.saveVoice(p)
+        let who: String = if case .contact(_, let name) = n.target { name } else { "your own voice" }
+        mail.toast(MailToast(text: "Voice updated for \(who) (automatic). Edit it under Settings → AI → Voice.", symbol: "person.wave.2"))
     }
 
     // MARK: Signature import (Settings → Signatures)

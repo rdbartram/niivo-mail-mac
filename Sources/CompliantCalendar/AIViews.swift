@@ -398,6 +398,7 @@ struct AISettingsView: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
             VoiceSettingsSections()   // VOICE-HOOK
+            VoiceLearnSettingsSections()   // ONBOARDING-HOOK: Learn my voice, Forget, Run setup again
             Section("Organisation policy") {
                 LabeledContent("Cloud AI") { Text(t.aiAccess.rawValue) }
                 LabeledContent("On-device AI") { Text(t.effectiveOnDeviceAIAccess.rawValue) }
