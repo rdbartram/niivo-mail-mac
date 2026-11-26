@@ -130,6 +130,8 @@ final class OnboardingModel {
     var aiPick: AIOnboardingChoice = .off
     var cloudPick: AIProviderID?
     var aiNote: String?
+    /// Bumped by "Check again" so the on-device status is re-read (macOS gives no change notification).
+    var onDeviceCheck = 0
 
     // Local models step (probed only on an explicit click; loopback or https only)
     var serverURL = LocalModelServer.known[0].baseURL

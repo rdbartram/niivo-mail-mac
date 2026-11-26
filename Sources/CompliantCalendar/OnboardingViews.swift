@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import CalendarCore
 import MailCore
 
@@ -184,16 +185,18 @@ struct OnboardingAIStep: View {
         let o = OnboardingModel.shared
         let ai = app.mail.ai
         let p = OnboardingModel.policy(ai.trustPolicy)
-        let hw = OnDeviceProvider.unavailableReason()
+        let _ = o.onDeviceCheck
+        let hw = OnDeviceProvider.status()
         OnboardingTitle(title: "How should niivo use AI?",
                         lead: "AI is off on a new install. You can only choose what your organisation's policy allows; options it rules out say why.")
         ForEach(AIOnboardingChoice.allCases) { c in
             let refusal = AIChoicePolicy.policyRefusal(c, cloudAccess: p.cloud, onDeviceAccess: p.onDevice, allowedProviders: p.allowed)
-                ?? (c == .onDeviceOnly ? hw.map { "Not available on this Mac: \($0)" } : nil)
+                ?? (c == .onDeviceOnly && !hw.isAvailable && !hw.isFixable ? hw.title : nil)
             OnboardingOption(title: c.title, detail: detail(c, ai: ai), selected: o.aiPick == c, refusal: refusal) {
                 o.aiPick = c; o.aiNote = nil
             }
         }
+        if o.aiPick == .onDeviceOnly, !hw.isAvailable { OnDeviceStatusCard(status: hw) }
         if o.aiPick == .cloudWherePermitted {
             let allowed = AIChoicePolicy.cloudProviders(cloudAccess: p.cloud, allowedProviders: p.allowed)
             OnboardingCard(label: "Cloud provider") {
@@ -260,15 +263,13 @@ struct OnboardingLocalModelsStep: View {
         let o = OnboardingModel.shared
         @Bindable var b = o
         let ai = app.mail.ai
-        let hw = OnDeviceProvider.unavailableReason()
+        let _ = o.onDeviceCheck
+        let hw = OnDeviceProvider.status()
         OnboardingTitle(title: "Models on this Mac",
                         lead: "niivo doesn't download models itself. It uses Apple's on-device model when macOS provides it, or a local server you run.")
         OnboardingCard(label: "Apple on-device model") {
-            HStack(spacing: 8) {
-                NSymbol(hw == nil ? "checkmark.circle" : "xmark.circle", size: 13).foregroundStyle(hw == nil ? skin.accentInk : skin.guide)
-                Text(hw.map { "Not available: \($0)" } ?? "Available").font(skin.sans(NV.Size.body, .medium)).foregroundStyle(skin.ink)
-            }
-            Text("Used for triage lines, summaries, natural-language search and reply intents, and for drafts when AI is on-device only. macOS downloads and updates it (System Settings → Apple Intelligence & Siri) and manages its size.")
+            OnDeviceStatusRows(status: hw)
+            Text("Used for triage lines, summaries, natural-language search and reply intents, and for drafts when AI is on-device only. macOS downloads and updates it and manages its size; niivo can't download it for you.")
                 .font(skin.sans(NV.Size.bodySm)).foregroundStyle(skin.muted).fixedSize(horizontal: false, vertical: true)
         }
         OnboardingCard(label: "Local server (Ollama, LM Studio)") {
@@ -485,5 +486,38 @@ struct VoiceLearnSettingsSections: View {
             }
             Text("Welcome, AI, local models, voice and signatures. Each step is skippable.").font(.caption).foregroundStyle(.secondary)
         }
+    }
+}
+
+// MARK: Apple on-device model status
+
+/// Status line, what to do, and the two actions an app can take: open System Settings and check again.
+struct OnDeviceStatusRows: View {
+    let status: OnDeviceStatus
+    @Environment(\.skin) private var skin
+
+    var body: some View {
+        HStack(spacing: 8) {
+            NSymbol(status.isAvailable ? "checkmark.circle" : (status == .notReady ? "arrow.down.circle" : "xmark.circle"), size: 13)
+                .foregroundStyle(status.isAvailable ? skin.accentInk : skin.guide)
+            Text(status.title).font(skin.sans(NV.Size.body, .medium)).foregroundStyle(skin.ink)
+        }
+        if !status.isAvailable {
+            Text(status.help).font(skin.sans(NV.Size.bodySm)).foregroundStyle(skin.muted).fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 8) {
+                if status != .needsNewerMacOS {
+                    NButton("Open Apple Intelligence settings", kind: .ghost) { NSWorkspace.shared.open(OnDeviceStatus.settingsURL) }
+                }
+                NButton("Check again", kind: .ghost) { OnboardingModel.shared.onDeviceCheck += 1 }
+                Spacer()
+            }
+        }
+    }
+}
+
+struct OnDeviceStatusCard: View {
+    let status: OnDeviceStatus
+    var body: some View {
+        OnboardingCard(label: "Apple on-device model") { OnDeviceStatusRows(status: status) }
     }
 }

@@ -8,6 +8,18 @@ import MailCore
 func runOnboardingTests() async {
     section("Onboarding: steps, AI clamp, local servers, voice modes")
 
+    // 0. Apple on-device model status: FoundationModels reasons → something the user can act on.
+    check(OnDeviceStatus(reason: "modelNotReady") == .notReady, "on-device: modelNotReady → still preparing")
+    check(OnDeviceStatus(reason: "appleIntelligenceNotEnabled") == .notEnabled, "on-device: not enabled → turned off")
+    check(OnDeviceStatus(reason: "deviceNotEligible") == .notEligible, "on-device: device not eligible")
+    check(OnDeviceStatus(reason: "somethingNew") == .other("somethingNew"), "on-device: unknown reason kept verbatim")
+    check(OnDeviceStatus.notReady.isFixable && OnDeviceStatus.notEnabled.isFixable, "on-device: not ready / not enabled can be fixed in Settings")
+    check(!OnDeviceStatus.notEligible.isFixable && !OnDeviceStatus.needsNewerMacOS.isFixable, "on-device: ineligible Macs are not fixable")
+    check(!OnDeviceStatus.notReady.title.contains("modelNotReady") && OnDeviceStatus.notReady.help.contains("System Settings") == false
+          && OnDeviceStatus.notEnabled.help.contains("System Settings"), "on-device: plain-language titles, Settings path when it's off")
+    check(OnDeviceStatus.settingsURL.scheme == "x-apple.systempreferences", "on-device: opens System Settings")
+    check(OnDeviceProvider.status().isAvailable == OnDeviceProvider.isAvailable, "on-device: status agrees with isAvailable on this Mac (\(OnDeviceProvider.status().title))")
+
     // 1. Step state machine.
     var f = OnboardingFlow()
     check(f.step == .welcome && f.isFirst, "flow: a first run starts at Welcome")
