@@ -108,3 +108,13 @@ extension ListRowLayout {
         }
     }
 }
+
+/// Where the cursor starts when a composer opens. Outlook / Apple Mail behaviour: a new message or a forward
+/// (no recipients yet) starts in To; a reply or a reopened draft with recipients starts in the body.
+public enum ComposeFocus: Equatable, Sendable {
+    case to, body
+
+    public static func initial(to recipients: Int, toText: String) -> ComposeFocus {
+        recipients == 0 && toText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? .to : .body
+    }
+}

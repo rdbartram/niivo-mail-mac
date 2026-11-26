@@ -85,4 +85,10 @@ func runComposeLayoutTests() {
     check(MailViewPreferences.load(d).showLabelChips == false, "label chips in the list: off by default")
     var p = MailViewPreferences(); p.showLabelChips = true; p.save(d)
     check(MailViewPreferences.load(d).showLabelChips, "label chips toggle persists")
+
+    // Initial focus: new message / forward → To; reply / draft with recipients → body
+    check(ComposeFocus.initial(to: 0, toText: "") == .to, "new message (no recipients) starts in To")
+    check(ComposeFocus.initial(to: 0, toText: "  \n") == .to, "whitespace in To still counts as empty")
+    check(ComposeFocus.initial(to: 1, toText: "") == .body, "reply (recipient filled in) starts in the body")
+    check(ComposeFocus.initial(to: 0, toText: "sam@") == .body, "half-typed address in a reopened draft keeps the body")
 }
