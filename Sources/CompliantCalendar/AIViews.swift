@@ -347,7 +347,7 @@ struct AISettingsView: View {
         Form {
             Section("Provider") {
                 Picker("AI", selection: $b.settings.choice) { ForEach(AIProviderChoice.allCases, id: \.self) { Text($0.title).tag($0) } }
-                LabeledContent("On-device model") { Text(OnDeviceProvider.unavailableReason().map { "unavailable (\($0))" } ?? "available") }
+                LabeledContent("On-device model") { Text(OnDeviceProvider.status().title) }
                 Toggle("Use on-device for triage and summaries when available", isOn: $b.settings.onDeviceForLightTasks)
                 switch ai.settings.choice {
                 case .claudeCLI:
@@ -398,6 +398,7 @@ struct AISettingsView: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
             VoiceSettingsSections()   // VOICE-HOOK
+            VoiceLearnSettingsSections()   // ONBOARDING-HOOK: Learn my voice, Forget, Run setup again
             Section("Organisation policy") {
                 LabeledContent("Cloud AI") { Text(t.aiAccess.rawValue) }
                 LabeledContent("On-device AI") { Text(t.effectiveOnDeviceAIAccess.rawValue) }

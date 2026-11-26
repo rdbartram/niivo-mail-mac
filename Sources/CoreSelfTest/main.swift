@@ -208,6 +208,7 @@ await runMCPTests()
 await runAIAssistTests()
 await runVoiceTests()   // VOICE: layered voice prompts, signature rules
 await runVoiceLearnTests()   // VOICE2-HOOK: learn voice, nudges, signature import
+await runOnboardingTests()   // ONBOARDING: steps, AI clamp, local servers, voice modes
 await runAgentToolsTests()
 await runProtectedContentTests()
 await runProtectedOpenTests()

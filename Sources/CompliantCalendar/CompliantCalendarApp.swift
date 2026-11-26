@@ -168,6 +168,14 @@ struct RootView: View {
             }
           }
         }
+        // ONBOARDING-HOOK: first-run setup once per account after sign-in (OnboardingViews.swift)
+        .sheet(isPresented: Binding(get: { OnboardingModel.shared.presented && !model.trust.hidesContent },   // hidden while locked
+                                    set: { if !$0 && !model.trust.hidesContent { OnboardingModel.shared.presented = false } })) {
+            OnboardingSheet().environment(model).skinned(model.skin)
+        }
+        .task(id: "\(model.mode == .live)|\(model.mail.started)|\(model.mail.showSettings)|\(model.trust.hidesContent)") {
+            OnboardingModel.shared.autoShowIfNeeded(model)
+        }
         .skinned(model.skin)
         .containerBackground(model.skin.brand ? AnyShapeStyle(model.skin.ground) : AnyShapeStyle(.windowBackground), for: .window)
         // Window-level enforcement: exclude the window from screenshots / screen sharing while anything on

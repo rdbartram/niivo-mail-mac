@@ -385,6 +385,13 @@ public struct OnDeviceProvider: AIProvider {
 
     public static var isAvailable: Bool { unavailableReason() == nil }
 
+    /// The same check as `unavailableReason`, as something the UI can explain and act on.
+    public static func status() -> OnDeviceStatus {
+        guard let r = unavailableReason() else { return .available }
+        if r == "needs macOS 26" || r == "FoundationModels not in this SDK" { return .needsNewerMacOS }
+        return OnDeviceStatus(reason: r)
+    }
+
     /// TRIAGE2-HOOK (Phase 0): the model's context size in tokens (input + output), read at run time, never
     /// hard-coded (plan §2.4). nil when the model isn't available.
     public static var contextTokens: Int? {
@@ -426,7 +433,7 @@ public struct OnDeviceProvider: AIProvider {
     public func complete(system: String, user: String, maxTokens: Int) async throws -> String {
         #if canImport(FoundationModels)
         if #available(macOS 26.0, *) {
-            guard Self.isAvailable else { throw AIProviderError.unavailable(Self.unavailableReason() ?? "") }
+            guard Self.isAvailable else { throw AIProviderError.unavailable("Apple on-device model: " + Self.status().title.lowercased()) }
             let session = LanguageModelSession(instructions: system)
             do {
                 let r = try await session.respond(to: user, options: GenerationOptions(maximumResponseTokens: maxTokens))
@@ -435,7 +442,7 @@ public struct OnDeviceProvider: AIProvider {
             catch { throw Self.map(error) }   // TRIAGE2-HOOK (Phase 0)
         }
         #endif
-        throw AIProviderError.unavailable(Self.unavailableReason() ?? "")
+        throw AIProviderError.unavailable("Apple on-device model: " + Self.status().title.lowercased())
     }
 }
 
