@@ -141,6 +141,30 @@ func runTrustTests() async {
               "MDM-forced keys relax, overriding the tenant file and defaults")
         check(f.policy.cacheWindowMaxDays == 7 && f.policy.aiAccess == .off, "keys MDM doesn't force still follow tenant tightening")
 
+        // S4: a signed tenant file may lengthen the offline window on BYOD (capped at the managed default); nothing else relaxes.
+        let long = doc { $0.cacheWindowMaxDays = 120; $0.offlineGraceDays = 30; $0.allowPrint = false }
+        let longSig = try! signer.signature(for: long)
+        let l = PolicyLoader(prefs: StaticManagedPreferences(), pinnedKeys: pinned, now: clock).load(tenantJSON: long, tenantSignature: longSig)
+        check(l.policy.profile == .byod && l.policy.cacheWindowMaxDays == 120, "signed tenant file lengthens the BYOD window")
+        check(l.sources.first { $0.source == .tenantSigned }?.notes.contains("relaxed:cacheWindowMaxDays") == true, "window relax reported")
+        check(l.policy.offlineGraceDays == TrustPolicy.byodDefault.offlineGraceDays && !l.policy.allowPrint,
+              "other keys in the same file still only tighten")
+        let huge = doc { $0.cacheWindowMaxDays = 5000 }
+        let h = PolicyLoader(prefs: StaticManagedPreferences(), pinnedKeys: pinned, now: clock)
+            .load(tenantJSON: huge, tenantSignature: try! signer.signature(for: huge))
+        check(h.policy.cacheWindowMaxDays == TrustPolicy.managedDefault.cacheWindowMaxDays, "window relax capped at the managed default")
+        check(t.sources.first { $0.source == .tenantSigned }?.notes.contains("relaxed:cacheWindowMaxDays") == false,
+              "tightening the window is not reported as a relax")
+        let lu = PolicyLoader(prefs: StaticManagedPreferences(values: ["cacheWindowMaxDays": 10]), pinnedKeys: pinned, now: clock)
+            .load(tenantJSON: long, tenantSignature: longSig)
+        check(lu.policy.cacheWindowMaxDays == 10, "user `defaults write` still tightens a tenant-lengthened window")
+        check(PolicyLoader(prefs: StaticManagedPreferences(values: ["cacheWindowMaxDays": 200]), pinnedKeys: pinned, now: clock)
+              .load(tenantJSON: nil, tenantSignature: nil).policy.cacheWindowMaxDays == TrustPolicy.byodDefault.cacheWindowMaxDays,
+              "unsigned user pref cannot lengthen the window")
+        let mdmShort = StaticManagedPreferences(values: ["cacheWindowMaxDays": 14], forced: ["cacheWindowMaxDays"])
+        check(PolicyLoader(prefs: mdmShort, pinnedKeys: pinned, now: clock).load(tenantJSON: long, tenantSignature: longSig)
+              .policy.cacheWindowMaxDays == 14, "MDM-forced window overrides the tenant file")
+
         let user = StaticManagedPreferences(values: ["profile": "managed", "allowAttachmentsDownload": true, "cacheWindowMaxDays": 5,
                                                      "offlineWipeDays": "lots"])
         let u = PolicyLoader(prefs: user, pinnedKeys: pinned, now: clock).load(tenantJSON: nil, tenantSignature: nil)
