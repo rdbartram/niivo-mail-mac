@@ -1,0 +1,15 @@
+niivo mail for macOS — Copyright 2026 Ryan Bartram
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+Original project: https://github.com/rdbartram/niivo-mail-mac
+
+Attribution requirement: any redistribution of this software, in source or binary form, and any
+derivative work based on it must retain this NOTICE file (as required by section 4(d) of the Apache
+License 2.0) and must credit the original author, Ryan Bartram, with a link to the original project
+repository above, in a place where such third-party notices normally appear (for example the
+documentation, an "About" window or a NOTICE file distributed with the work).
+
+This product includes third-party software and fonts under their own licences. See
+THIRD-PARTY-NOTICES.md. The Microsoft Information Protection SDK is not included in this
+repository; builds that bundle it are subject to Microsoft's licence terms for that SDK.

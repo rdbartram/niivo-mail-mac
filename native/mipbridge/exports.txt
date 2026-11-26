@@ -1,0 +1,12 @@
+_nmb_abi_version
+_nmb_sdk_version
+_nmb_create
+_nmb_inspect_rpmsg
+_nmb_result_free
+_nmb_destroy
+_nmb_policy_load
+_nmb_policy_free
+_nmb_label_compute
+_nmb_label_plan_free
+_nmb_inspect_rpmsg_attachments
+_nmb_attachments_free

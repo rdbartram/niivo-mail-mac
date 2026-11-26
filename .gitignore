@@ -1,0 +1,26 @@
+.build/
+build/
+*.sqlite*
+.DS_Store
+.swiftpm/
+
+# Terraform
+infra/**/.terraform/
+infra/**/*.tfstate*
+infra/**/tfplan
+infra/**/.terraform.lock.hcl
+signing/
+vendor/
+
+# MIP SDK (licence click-through, not redistributed via git) + built bridge, see docs/MIP.md
+vendor/
+
+# Deployment-specific bundle defaults (NIIVO_CLIENT_ID / NIIVO_TENANT_ID), read by scripts/bundle.sh
+build.env
+
+# Local tooling, session and token artefacts (never publish)
+.claude/
+:memory:*
+*.ses
+*tokens*.json
+.token-optimizer/
