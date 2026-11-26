@@ -33,6 +33,7 @@ Sparkle installs an update only when both of these hold:
    SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)"
    TEAM_ID=TEAMID
    NOTARY_PROFILE=<notarytool keychain profile>     # xcrun notarytool store-credentials <name> ...
+   PROFILE=signing/<name>.provisionprofile          # Developer ID provisioning profile for the app ID
    ```
 
    The public key isn't a secret. It's kept out of the scripts so a fork builds against its own key and feed. Forks
@@ -103,6 +104,14 @@ These keys go in the app's preference domain, through an MDM configuration profi
 |---|---|
 | `disableUpdates` (Bool) | `true` turns the updater off: no checks, no menu item. Settings says updates are managed by your organisation |
 | `SUEnableAutomaticChecks` (Bool) | Forced: Sparkle uses it and the Settings toggle is locked |
+
+## Provisioning profile (required)
+
+The app has restricted entitlements (`keychain-access-groups` for MSAL, `application-identifier`). macOS only
+allows them with an embedded provisioning profile that grants the same app identifier; without it the app is killed
+at launch (SIGKILL, exit 137) before any of our code runs. Gatekeeper, `spctl` and notarisation all pass such a
+build, so `release.sh` has its own launch gate: it refuses to publish without a matching, unexpired embedded profile.
+v0.1.0 shipped without one and doesn't start; v0.1.1 is the first working release.
 
 ## Not verified yet
 

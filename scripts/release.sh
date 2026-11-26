@@ -5,7 +5,9 @@
 #   VERSION=0.2.0 ./scripts/release.sh            # publish v0.2.0
 #   VERSION=0.2.0 ./scripts/release.sh --dry-run  # everything except `gh release create`
 #
-# Needs (environment or build.env): SIGN_IDENTITY, TEAM_ID, NOTARY_PROFILE, SPARKLE_PUBLIC_KEY.
+# Needs (environment or build.env): SIGN_IDENTITY, TEAM_ID, NOTARY_PROFILE, PROFILE, SPARKLE_PUBLIC_KEY.
+# PROFILE is the Developer ID provisioning profile. Without it macOS kills the app at launch (SIGKILL, exit 137):
+# keychain-access-groups / application-identifier are restricted entitlements, and notarisation does not catch it.
 # Optional: BUILD_NUMBER (default: commit count of HEAD), SPARKLE_FEED_URL, GH_REPO (default: taken from the feed URL),
 #           SPARKLE_ACCOUNT (keychain account of the EdDSA key, default ed25519), RELEASE_NOTES (markdown file),
 #           RELEASE_DIR (output directory, default build/release/$VERSION).
@@ -30,7 +32,7 @@ die() { echo "release: $*" >&2; exit 1; }
 HEAD_SHA="$(git rev-parse HEAD)"
 
 # Same env-over-build.env rule as bundle.sh (which re-reads build.env itself; we export what it needs).
-_ENV_VARS=(SIGN_IDENTITY TEAM_ID NOTARY_PROFILE SPARKLE_PUBLIC_KEY SPARKLE_FEED_URL VERSION BUILD_NUMBER GH_REPO SPARKLE_ACCOUNT)
+_ENV_VARS=(SIGN_IDENTITY TEAM_ID NOTARY_PROFILE PROFILE SPARKLE_PUBLIC_KEY SPARKLE_FEED_URL VERSION BUILD_NUMBER GH_REPO SPARKLE_ACCOUNT)
 _env_saved=()
 for v in "${_ENV_VARS[@]}"; do _env_saved+=("${!v-__unset__}"); done
 if [[ -f build.env ]]; then set -a; source build.env; set +a; fi
@@ -55,9 +57,10 @@ ZIP_NAME="niivo-mail-$VERSION.zip"
 DOWNLOAD_URL="https://github.com/$GH_REPO/releases/download/$TAG/$ZIP_NAME"
 
 if [[ $DRY_RUN == 0 ]]; then
-  for v in SIGN_IDENTITY TEAM_ID NOTARY_PROFILE SPARKLE_PUBLIC_KEY; do
+  for v in SIGN_IDENTITY TEAM_ID NOTARY_PROFILE PROFILE SPARKLE_PUBLIC_KEY; do
     [[ -n "${!v:-}" ]] || die "$v is not set (environment or build.env)"
   done
+  [[ -f "$PROFILE" ]] || die "PROFILE $PROFILE not found"
   command -v gh >/dev/null || die "gh (GitHub CLI) not found"
   git branch -r --contains "$HEAD_SHA" | grep -q . || die "HEAD $HEAD_SHA is not on any remote branch; push first"
   if gh release view "$TAG" --repo "$GH_REPO" >/dev/null 2>&1; then die "release $TAG already exists on $GH_REPO"; fi
@@ -100,10 +103,23 @@ if [[ $DRY_RUN == 1 && -z "${SIGN_IDENTITY:-}" ]]; then
   echo "release: dry run without SIGN_IDENTITY — ad-hoc build, no notarisation"
   SIGN_IDENTITY="" TEAM_ID="" NOTARY_PROFILE="" ./scripts/bundle.sh release
 else
-  export SIGN_IDENTITY TEAM_ID NOTARY_PROFILE="${NOTARY_PROFILE:-}"
+  export SIGN_IDENTITY TEAM_ID NOTARY_PROFILE="${NOTARY_PROFILE:-}" PROFILE="${PROFILE:-}"
   ./scripts/bundle.sh release
   # Notarised + stapled → Gatekeeper accepts it (bundle.sh already ran spctl; this is the release gate).
   if [[ -n "$NOTARY_PROFILE" ]]; then xcrun stapler validate "$APP"; fi
+  # Launch gate: restricted entitlements need an embedded profile that grants this app identifier, or the app is
+  # SIGKILLed before main(). spctl and notarisation both pass such a build (v0.1.0 shipped like that).
+  ENTS="$(codesign -d --entitlements - --xml "$APP" 2>/dev/null)"
+  if grep -q -e keychain-access-groups -e application-identifier <<<"$ENTS"; then
+    EMB="$APP/Contents/embedded.provisionprofile"
+    [[ -f "$EMB" ]] || die "app has restricted entitlements but no embedded.provisionprofile (set PROFILE)"
+    APPID="$(plutil -extract 'com\.apple\.application-identifier' raw - <<<"$ENTS")"
+    PAPPID="$(security cms -D -i "$EMB" | plutil -extract 'Entitlements.com\.apple\.application-identifier' raw -)"
+    [[ "$PAPPID" == "$APPID" || "$PAPPID" == "${APPID%%.*}.*" ]] || die "profile grants $PAPPID, app is $APPID"
+    PEXP="$(security cms -D -i "$EMB" | plutil -extract ExpirationDate raw -)"
+    [[ "$(date -u +%Y-%m-%dT%H:%M:%SZ)" < "$PEXP" ]] || die "provisioning profile expired $PEXP"
+    echo "release: launch gate ok (profile grants $PAPPID, expires $PEXP)"
+  fi
 fi
 
 # 4. Archive exactly as Sparkle's publishing guide says (ditto keeps the framework symlinks and signatures valid).
